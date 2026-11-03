@@ -61,6 +61,22 @@ assert abs(seg0["twist_start_deg"] - seg1["twist_start_deg"]) < 0.5  # twist rel
 _, fk_pos, _ = skel30.fk(skel30.global_rots_to_local_rots(rh), ph[:, skel30.root_idx])
 assert float((fk_pos - ph).abs().max()) < 0.01, "re-headed pose drifts under FK"
 
+# hips_heading: only hips and legs turn (here by 40 deg), so torso twist grows by that much; upper body unmoved.
+from kimodo_mcp.server import lower_body  # noqa: E402
+
+names30 = list(skel30.bone_index)
+fwd0 = rots[:, skel30.root_idx, :, 2]
+target = float(torch.rad2deg(torch.atan2(fwd0[0, 0], fwd0[0, 2]))) - 40.0
+rl, pl = face_heading(rots[:1], pos[:1], skel30.root_idx, target, lower_body(names30), attach=names30.index("Spine1"))
+upper = [i for i in range(len(names30)) if i not in lower_body(names30)]
+assert torch.allclose(rl[:, upper], rots[:1, upper])  # upper body keeps its orientation
+assert float((pl[:, upper] - pos[:1, upper]).abs().max()) < 0.03  # and moves at most with its attachment
+t0 = metrics.segments({"posed_joints": pos[:1].numpy()}, [("", 0, 0)])[0]["twist_start_deg"]
+t1 = metrics.segments({"posed_joints": pl.numpy()}, [("", 0, 0)])[0]["twist_start_deg"]
+assert abs((t1 - t0) + 40) < 3, (t0, t1)  # hips turned right 40 deg, shoulders stayed -> left shoulder back (-40)
+_, fk_pos, _ = skel30.fk(skel30.global_rots_to_local_rots(rl), pl[:, skel30.root_idx])
+assert float((fk_pos - pl).abs().max()) < 0.01, "hips-turned pose drifts under FK"
+
 for view in render.VIEWS:
     frames = render.pick_frames(m["frames"], 8)
     assert frames[0] == 0 and frames[-1] == 149 and len(frames) == 8

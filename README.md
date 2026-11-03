@@ -170,9 +170,9 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 
 | Tool | What it does |
 |---|---|
-| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, and `face_heading_deg` to turn the whole pose so the hips face a direction), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, `face_heading_deg` to turn the whole pose so the hips face a direction, and `hips_heading_deg` to turn only the hips and legs, which converts a whole-body swivel into torso twist), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per-segment torso twist (shoulders vs. hips) and how far each shoulder moved back. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per segment: torso twist (shoulders vs. hips), how far each shoulder moved back, and posture (hand height, how far the hands are in front of the hips and apart, torso lean, knee bend, feet apart). |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -276,6 +276,16 @@ Timeline: "A person stands still." (1 s), then a right-shoulder hit (2.5 s), the
 ![Shoulder hits contact sheet](assets/mcp-shoulder-hits-sheet.png)
 
 <sub>Take t046, front view (the character's right is on the left of the image): neutral, right-shoulder hit (f38–48), recovery, left-shoulder hit (f111–116), recovered.</sub>
+
+**Soldier version.** Same two hits, but from a combat-ready rifle stance, keeping the weapon up and returning to ready. Extra targets (mine): in the ready stance, hands at 1.0–1.4 m and at least 0.25 m in front of the hips, knees bent under 170°, feet at least 0.3 m apart; hands above 0.95 m on average during both hits. t046 failed all of these (hands at 0.85 m, legs straight).
+
+1. Soldier wording in all three prompts ("A soldier stands in a combat-ready stance, knees slightly bent, holding a rifle up at chest height with both hands." then "The soldier is shot in the right shoulder: ... but they keep holding the rifle and return to the ready stance." and the same for the left), 7 samples over two seeds: every take held the rifle stance (hands 1.16–1.37 m, 0.5–0.6 m forward, 0.21–0.38 m apart; knees 119–147°), the right hit was weak in most, and the whole body swivelled 42–78° with each hit. The stance is bladed, so neutral twist varied from -14° to +15° between takes.
+2. Mirroring the left hit would put the rifle in the other hand, so instead used t057, which had both hits, but as swivels (hips at -44° and +69°). Locked its ready pose (f15, f75), its right-hit peak (f46) with `hips_heading_deg: -15`, and its left-hit peak (f134) with `face_heading_deg: 25`. Both hits became strong; swivel 57–82°, now during the unlocked recovery after the right hit (f60).
+3. Also locked t057 f60 with `face_heading_deg: 0`, softened the right hit to `hips_heading_deg: -25`, and copied the f15 ready pose to f172 so it ends in the same stance. Result (t063): right shoulder 0.40 m back (+21° twist from neutral), left 0.29 m (-44°), both recovered, hands at 1.23–1.26 m throughout, hips turn 34°. The ready stance leans 29° forward, which misses my 25° cap; I'd treat that cap as too tight for a combat stance.
+
+![Soldier shoulder hits contact sheet](assets/mcp-soldier-hits-sheet.png)
+
+<sub>Take t063, front view: ready stance, right-shoulder hit (f40–46), ready again, left-shoulder hit (f128–150), ready.</sub>
 
 ### Limits
 

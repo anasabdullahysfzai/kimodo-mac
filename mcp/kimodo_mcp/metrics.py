@@ -38,6 +38,20 @@ def segments(motion: dict, bounds: list[tuple[str, int, int]]) -> list[dict]:
             back = rel[0] - rel  # positive = moved backward
             seg[f"{side.lower()}_shoulder_max_back_m"] = round(float(back.max()), 3)
             seg[f"{side.lower()}_shoulder_max_back_frame"] = a + int(back.argmax())
+        # posture (means over the segment): where the hands are, torso lean, knee bend
+        hands = (pj[a:b + 1, idx["LeftHand"]] + pj[a:b + 1, idx["RightHand"]]) / 2
+        seg["hands_height_m"] = round(float(hands[:, 1].mean()), 3)
+        seg["hands_forward_of_hips_m"] = round(float(((hands[:, [0, 2]] - hips[a:b + 1]) @ facing).mean()), 3)
+        seg["hands_apart_m"] = round(float(np.linalg.norm(pj[a:b + 1, idx["LeftHand"]] - pj[a:b + 1, idx["RightHand"]], axis=1).mean()), 3)
+        spine = pj[a:b + 1, idx["Neck1"]] - pj[a:b + 1, idx["Hips"]]
+        seg["torso_lean_deg"] = round(float(np.degrees(np.arccos(spine[:, 1] / np.linalg.norm(spine, axis=1))).mean()), 0)
+        knees = []
+        for side in ("Left", "Right"):
+            hip_, knee_, ankle_ = (pj[a:b + 1, idx[side + j]] for j in ("Leg", "Shin", "Foot"))
+            u, v = hip_ - knee_, ankle_ - knee_
+            knees.append(np.degrees(np.arccos(np.clip((u * v).sum(1) / np.linalg.norm(u, axis=1) / np.linalg.norm(v, axis=1), -1, 1))))
+        seg["knee_angle_deg"] = round(float(np.mean(knees)), 0)  # 180 = straight legs
+        seg["feet_apart_m"] = round(float(np.linalg.norm(pj[a:b + 1, idx["LeftFoot"]] - pj[a:b + 1, idx["RightFoot"]], axis=1).mean()), 3)
         seg["head_min_m"] = round(float(pj[a:b + 1, idx["Head"], 1].min()), 3)
         seg["root_travel_m"] = round(float(np.linalg.norm(hips[b] - hips[a])), 3)
         out.append(seg)
