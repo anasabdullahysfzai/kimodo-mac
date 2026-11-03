@@ -67,7 +67,8 @@ def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int
     """Render the given frames of one motion sample into a labelled grid.
 
     All tiles share one scale and ground level so heights compare across frames.
-    Light horizontal guides mark every 0.5 m (side/front/three-quarter views).
+    Light horizontal guides mark every 0.5 m in level views (side, front). Tilted views
+    (three-quarter, top) have no true height axis, so they get no guides and are centred on the root.
     """
     pj, gr = motion["posed_joints"], motion["global_rot_mats"]
     verts, faces = skin_vertices(gr[frames], pj[frames])
@@ -80,9 +81,9 @@ def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int
     depth = verts @ forward
     root = pj[frames, 0]
     cu, cv = root @ right, root @ up  # per-tile centring on the root
-    top_view = view == "top"
+    level = abs(up[1] - 1) < 1e-6  # camera not tilted: screen-up is world height
     half_w = np.abs(u - cu[:, None]).max() + 0.15
-    if top_view:
+    if not level:
         half_h = np.abs(v - cv[:, None]).max() + 0.15
         span_v = 2 * half_h
     else:
@@ -101,11 +102,11 @@ def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int
         cx = ox + tile / 2
 
         def to_px(uu, vv):
-            if top_view:
+            if not level:
                 return cx + (uu - cu[k]) * scale, oy + label_h + (tile - label_h) / 2 - (vv - cv[k]) * scale
             return cx + (uu - cu[k]) * scale, oy + tile - 8 - (vv - v_lo) * scale
 
-        if not top_view:
+        if level:
             for h in np.arange(0.0, v_hi, 0.5):
                 y = to_px(0, h)[1]
                 draw.line([(ox + 4, y), (ox + tile - 4, y)], fill=GRID if h else INK, width=1)

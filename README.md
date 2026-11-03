@@ -172,7 +172,7 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 |---|---|
 | `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time and `offset_xz` to move them in space), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (also relative to the head), root travel, heading every 0.5 s and the frames where turning happens, lowest point, foot contact, jitter and the frames where it spikes. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel, heading every 0.5 s and the frames where turning happens, max torso lean, lowest point, foot contact, jitter and the frames where it spikes. |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -223,6 +223,18 @@ Text alone didn't produce this: in the demo, and in 3 MCP samples of "A person i
                     {"take_id": "t004-a-person-in-a-fighting", "frames": [51], "at_frames": [98], "offset_xz": [-0.06, 0.40]}]}
 ```
 </details>
+
+### Worked example: matching a reference (spinning hook kick)
+
+Reference: a 6-frame spinning hook kick sequence diagram found through image search (not reproduced here). Its checkable traits: the kick lands mid-spin with the back turned, the torso leans well forward and away from the kicking leg, the leg is near straight at head height, then re-chambers and returns to stance. The spinning kick above (t010) failed three of them: heading at the kick 410° (after the spin), torso lean 24°, knee 146°.
+
+1. New prompt in the reference's terms (3 samples): "A person in a fighting stance performs a spinning hook kick: they turn their back, lean their upper body forward and down, and swing their straight right leg in a wide arc at head height, then return to a fighting stance." Best (t016): 357° spin, kick at -280° (mid-spin), torso 45° leaning away from the foot, but toe 0.10 m below head and knee 141°.
+2. Locked t016's spin-entry and recovery poses (frames 42, 48, 66, 76), left the kick free, text weight 3.0 (3 samples): all kicked mid-spin above head height; t019 reached a 164° knee at frame 55 but had a 32 m/s² jitter spike before the kick.
+3. Locked t016 frames 42, 66, 76 plus t019 frame 55, text weight 3.0, constraint weight 1.5, seed 7. Result (t020): 350° spin, kick at -262°, toe 0.10 m above head, torso lean 52° away from the foot, knee 159° at the peak, mean jitter 3.26 (worst spike 23.9).
+
+![Spinning hook kick contact sheet](assets/mcp-hook-kick-sheet.png)
+
+<sub>Take t020, side view, frames 30, 46, 52, 55, 62, 80: stance, chamber while turning, kick with back turned (2 frames), re-chamber, stance.</sub>
 
 ### Limits
 
