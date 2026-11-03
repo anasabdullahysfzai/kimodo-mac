@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kimodo on Mac</title>
-<meta name="description" content="Run NVIDIA Kimodo's text-to-motion demo locally on an Apple Silicon Mac: install steps, Mac fixes, and a library of tested motion prompts.">
+<meta name="description" content="Steps and fixes for installing NVIDIA Kimodo and running its interactive demo on an Apple Silicon Mac.">
 <meta property="og:title" content="Kimodo on Mac">
-<meta property="og:description" content="Type a sentence, get 3D human motion, locally on an M-series Mac.">
+<meta property="og:description" content="Steps and fixes for installing NVIDIA Kimodo on an Apple Silicon Mac.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -177,6 +177,7 @@ details > *:not(summary) { margin-top: 10px; }
 .badge { padding: 3px 8px; border-radius: 5px; font-size: 0.78rem; font-weight: 600; }
 .b-tested { background: rgba(63,158,60,.14); color: var(--go); }
 .b-idea { background: var(--paper-2); color: var(--ink-2); }
+.b-partly { background: rgba(180,83,42,.12); color: var(--warn); }
 .p .copy { background: var(--clip); }
 .p .copy:hover { background: var(--ink); }
 .p .copy.done { background: var(--go); }
@@ -236,8 +237,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
 <main>
   <div class="wrap hero">
     <div>
-      <h1>Type a sentence. Watch a body move. On your Mac.</h1>
-      <p class="lede">NVIDIA's Kimodo turns text into 3D human motion. It was built for Linux and NVIDIA GPUs. This guide gets its interactive demo running locally on Apple Silicon, with every fix we needed along the way.</p>
+      <h1>Install NVIDIA Kimodo on an Apple Silicon Mac</h1>
+      <p class="lede">Kimodo is NVIDIA's text-to-motion model. Its official setup targets Linux with NVIDIA GPUs. These are the steps and fixes that got its interactive demo running on a Mac.</p>
       <div class="agent">
         <label for="agent-say">Using Claude Code or another coding agent? Paste this:</label>
         <div class="say" id="agent-say">Follow https://github.com/anasabdullahysfzai/kimodo-mac to install Kimodo on this Mac. Run downloads and servers in a real terminal, not a sandboxed shell.</div>
@@ -248,7 +249,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
       </div>
     </div>
 
-    <figure class="stage" aria-label="A figure throws a head-height kick, generated from the prompt shown below it">
+    <figure class="stage" aria-label="Illustration of a high kick, with the prompt that produced a head-height kick in the demo">
       <div class="viewport">
         <div class="floor"></div>
         <svg class="figure" viewBox="0 0 300 330" aria-hidden="true">
@@ -276,7 +277,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
       <div class="timeline">
         <div class="ticks"><span>0</span><span>21</span><span>42</span><span>63</span><span>84</span><span>105</span></div>
         <div class="track">
-          <div class="clip"><span class="dur">3.0 s</span>A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.</div>
+          <div class="clip">A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.</div>
           <div class="playhead"></div>
         </div>
       </div>
@@ -286,8 +287,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
   <section id="install">
     <div class="wrap">
       <div class="head">
-        <h2>Install, step by step</h2>
-        <p>Tested on an M5 Pro MacBook Pro with 48 GB of memory, macOS 26, Python 3.11 and torch 2.15. Plan on about an hour, most of it spent downloading.</p>
+        <h2>Install</h2>
+        <p>Tested on an M5 Pro MacBook Pro with 48 GB of memory, macOS 26, Python 3.11 and torch 2.15.</p>
       </div>
 
       <ol class="steps">
@@ -370,7 +371,7 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
         <li class="step">
           <div>
             <h3>Generate your first motion</h3>
-            <p>Open <a href="http://localhost:7860">localhost:7860</a>, close the welcome dialog and click Generate. The default "A person walks forward." takes about a minute for 6 seconds of motion, because the motion model runs on the CPU. Leave the Post Processing checkbox off.</p>
+            <p>Open <a href="http://localhost:7860">localhost:7860</a>, close the welcome dialog and click Generate. The default "A person walks forward." took about 62 seconds for 6 seconds of motion in our test, because the motion model runs on the CPU. Leave the Post Processing checkbox off.</p>
           </div>
         </li>
       </ol>
@@ -380,27 +381,23 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
   <section id="prompts">
     <div class="wrap">
       <div class="head">
-        <h2>Prompts that move well</h2>
-        <p>Kimodo animates one body, with no props and no second person. Describe what the arms, legs and hands do. Prompts marked "tested" were run in the demo; the rest follow the same patterns.</p>
+        <h2>Prompts we tried</h2>
+        <p>Results from our own runs in the demo, plus example prompts that ship with the Kimodo repo.</p>
       </div>
 
       <div class="filters" role="group" aria-label="Filter prompts">
         <button class="chip" aria-pressed="true" data-filter="all">All</button>
-        <button class="chip" aria-pressed="false" data-filter="combat">Combat</button>
-        <button class="chip" aria-pressed="false" data-filter="walk">Walking</button>
-        <button class="chip" aria-pressed="false" data-filter="hands">Hands and arms</button>
-        <button class="chip" aria-pressed="false" data-filter="character">Characters</button>
+        <button class="chip" aria-pressed="false" data-filter="tested">Tested here</button>
+        <button class="chip" aria-pressed="false" data-filter="repo">Kimodo repo examples</button>
       </div>
 
       <div class="lib" id="lib"></div>
 
       <div class="rules">
-        <div class="rule"><h3>Pose, not props</h3><p>"Holding a gun" means nothing to it. "Both arms extended in front of the chest, hands together" does.</p></div>
-        <div class="rule"><h3>Stance, intensity, landmark</h3><p>"In a fighting stance" plus "extremely high" plus "above their head" took a hip-height kick to head height.</p></div>
-        <div class="rule"><h3>One action per clip</h3><p>Put sequences in separate prompt boxes on the timeline. Click empty track space to add one, and drag its edge to resize.</p></div>
-        <div class="rule"><h3>When words run out, pin it</h3><p>Rare moves like spinning head kicks won't come from text alone. Add a Right Foot constraint at the peak frame and drag it into place.</p></div>
-        <div class="rule"><h3>Seed and text weight</h3><p>Change the seed for a different take, and note the seed of a good one. Text Weight around 3 follows wording more strictly; above 4 gets jittery.</p></div>
-        <div class="rule"><h3>Name sides and speed</h3><p>"Right leg", "left hand", "diagonally to the left", "slowly", "cautiously". Specific words give specific motion.</p></div>
+        <div class="rule"><h3>One body only</h3><p>"A person kicks to the head of the other person" did not produce a head kick. Describing the leg itself did.</p></div>
+        <div class="rule"><h3>Wording raised the kick</h3><p>Adding "in a fighting stance", "extremely high" and "above their head" took the kick from chest height to head height.</p></div>
+        <div class="rule"><h3>Spinning kicks stayed low</h3><p>A spinning head kick stayed around hip height with one prompt box, a shorter prompt, and separate spin and kick boxes.</p></div>
+        <div class="rule"><h3>Settings in the demo</h3><p>Model Parameters has Seed, Denoising Steps (default 100), Text Weight and Constraint Weight (both default 2.0). Num Samples generates several takes at once.</p></div>
       </div>
     </div>
   </section>
@@ -408,8 +405,8 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
   <section id="fixes">
     <div class="wrap">
       <div class="head">
-        <h2>If something breaks</h2>
-        <p>Every error we hit getting this running, and what fixed it.</p>
+        <h2>Troubleshooting</h2>
+        <p>Errors we hit during setup, and what fixed them.</p>
       </div>
       <div class="fixes">
         <details class="fix"><summary>403 … not in the authorized list</summary><p>Your Llama access isn't approved yet, or no token is set. Check the approval email, run <code>hf auth login</code>, or use the NousResearch copy from step 5.</p></details>
@@ -433,29 +430,24 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
 
 <script>
 const PROMPTS = [
-  { cat: "combat", tested: "Reached head height", text: "A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.", dur: "3.0 s",
-    was: "A person kicks to the head of the other person" },
-  { cat: "combat", tested: "Reached chest height", text: "A person shifts their weight onto their left leg and kicks their right leg high in front of them at head height, then returns to a fighting stance.", dur: "4.0 s" },
-  { cat: "combat", text: "A person performs a high roundhouse kick with their right leg, their foot reaching the height of their head.", dur: "3.0 s" },
-  { cat: "combat", text: "A person in a fighting stance throws a fast punch with their right fist, extending their arm fully at head height.", dur: "2.0 s" },
-  { cat: "combat", text: "A person punches forward twice with both fists, then kicks high with their right leg.", dur: "4.0 s" },
-  { cat: "combat", text: "A person in a fighting stance raises their right knee sharply up to their chest.", dur: "2.0 s" },
-  { cat: "combat", text: "A person steps forward and swings their right arm diagonally downward from above their head.", dur: "2.5 s" },
-  { cat: "walk", tested: "Default demo prompt", text: "A person walks forward.", dur: "6.0 s" },
-  { cat: "walk", text: "A person crouches low and walks forward slowly and carefully with both hands held in front of their chest.", dur: "5.0 s" },
-  { cat: "walk", text: "A person walking forward quickly stumbles but maintains their balance.", dur: "4.0 s" },
-  { cat: "walk", text: "Initially standing still and calm, the person then starts jogging in a counterclockwise arc.", dur: "6.0 s" },
-  { cat: "walk", text: "A person runs forward and then leaps over an obstacle in front of them.", dur: "4.0 s" },
-  { cat: "hands", text: "A person walks forward slowly with both arms extended in front of their chest, hands together as if aiming.", dur: "5.0 s",
-    was: "Holding a gun and walking" },
-  { cat: "hands", text: "A person walks slowly with their right hand held up next to their right ear.", dur: "5.0 s", was: "Walking while on the phone" },
-  { cat: "hands", text: "A person walks forward casually while raising their right hand to their mouth.", dur: "5.0 s", was: "Drinking coffee while walking" },
-  { cat: "hands", text: "A person walks forward carrying a large object in front of them with both hands.", dur: "5.0 s" },
-  { cat: "hands", text: "A person walks diagonally to the left and waves at someone on their right.", dur: "5.0 s" },
-  { cat: "hands", text: "A person picks up an object in front of them with two hands and places it to the left side.", dur: "4.0 s" },
-  { cat: "character", text: "A zombie with both arms extended forward walks with an uneven gait at a slow pace.", dur: "6.0 s" },
-  { cat: "character", text: "A person is doing a hip hop dance while moving around.", dur: "6.0 s" },
-  { cat: "character", text: "A person walking forward suddenly jerks backward, stumbles, and regains their balance.", dur: "4.0 s", was: "Getting shot while walking" }
+  { cat: "tested", result: "Worked: head height", text: "A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.", was: "A person kicks to the head of the other person" },
+  { cat: "tested", result: "Partly: chest height", text: "A person shifts their weight onto their left leg and kicks their right leg high in front of them at head height, then returns to a fighting stance." },
+  { cat: "tested", result: "Partly: spin worked, kick at hip height", text: "A person in a fighting stance spins around and swings their right leg in a wide arc above their head." },
+  { cat: "tested", result: "Partly: kick at hip height", text: "A person in a fighting stance spins around quickly and kicks their right leg extremely high, lifting their foot above their head." },
+  { cat: "tested", result: "Worked: default demo prompt", text: "A person walks forward." },
+  { cat: "repo", text: "A person is casually walking forward slowly" },
+  { cat: "repo", text: "A person begins walking up the stairs" },
+  { cat: "repo", text: "A person walking forward quickly stumbles but maintains their balance" },
+  { cat: "repo", text: "A person runs forward and then leaps over an obstacle in front of them." },
+  { cat: "repo", text: "Initially standing still and calm, the person then starts jogging in a counterclockwise arc." },
+  { cat: "repo", text: "A person walks diagonally to the left and waves at someone on their right" },
+  { cat: "repo", text: "A person walking backward points to the right side with their right hand" },
+  { cat: "repo", text: "A person is walking while carrying a small object in their left hand" },
+  { cat: "repo", text: "A person walks forward and picks something up from the ground" },
+  { cat: "repo", text: "A person picks up an object in front of them with two hands and places it to the left side" },
+  { cat: "repo", text: "A person picks up an object from low on their left side and places it up high" },
+  { cat: "repo", text: "A person is doing a hip hop dance while moving around" },
+  { cat: "repo", text: "A zombie with their left arm extended forward walks with an uneven gait at a slow pace." }
 ];
 
 const lib = document.getElementById("lib");
@@ -464,10 +456,9 @@ lib.innerHTML = PROMPTS.map((p, i) => `
     <p class="text" id="p${i}">${p.text}</p>
     <button class="copy" data-copy-from="p${i}">Copy</button>
     <div class="meta">
-      <span class="dur" style="background:var(--paper-2);color:var(--ink-2)">${p.dur}</span>
-      ${p.tested ? `<span class="badge b-tested">Tested: ${p.tested}</span>` : `<span class="badge b-idea">Suggested</span>`}
+      ${p.result ? `<span class="badge ${p.result.startsWith("Worked") ? "b-tested" : "b-partly"}">${p.result}</span>` : `<span class="badge b-idea">Kimodo repo example, not tested here</span>`}
     </div>
-    ${p.was ? `<p class="was">Instead of <s>${p.was}</s></p>` : ""}
+    ${p.was ? `<p class="was">Did not work: <s>${p.was}</s></p>` : ""}
   </article>`).join("");
 
 document.querySelectorAll(".chip").forEach(chip => chip.addEventListener("click", () => {

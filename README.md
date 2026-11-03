@@ -137,16 +137,23 @@ Wait for `Model kimodo-soma-rp loaded successfully` (and **no** "unreachable" li
 | `motion_correction package is not installed` on Generate | Post Processing checkbox is on. Turn it off (step 3). |
 | `Text encoder service is unreachable, falling back…` | Encoder not running, or the `/tmp` path issue. See step 6. |
 
-## Prompting tips (what worked)
+## Prompts we tried
 
-Kimodo generates **one body with no props or other people**. Describe what the body does, not objects or targets.
+Results from our own runs in the demo (Kimodo-SOMA-RP-v1.2, default settings):
 
-- Start with "A person …". Name sides/limbs ("right leg", "left hand"), direction, and speed/style.
-- Pattern that worked best: **stance/style + intensity word + body landmark**. For example, *"A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head."* reached head height. *"…kicks to the head of the other person"* did not, because there is no other person.
-- Replace objects with poses: "holding a gun" → *"walks forward slowly with both arms extended in front of their chest, hands together as if aiming."*
-- One action per prompt box. Use several boxes on the timeline for sequences (click empty track space to add, drag the right edge to resize, double-click to edit).
-- Knobs: **Model Parameters → Seed** (different takes; note the seed of a good one), **Classifier-Free Guidance → Text Weight** (default 2.0; ~3 follows wording more strictly, >4 can get jittery), **Num Samples** (several at once).
-- Rare moves (e.g. spinning head-height kicks) may not come out from text alone. Use the timeline constraints: at the peak frame add a **Right Foot** (or **Full-Body**) constraint, drag it into place in **Constraints → Enter Editing Mode**, raise **Constraint Weight**, and regenerate.
+| Prompt | Result |
+|---|---|
+| A person walks forward. | Worked (default demo prompt) |
+| A person kicks to the head of the other person | Did not produce a head kick. Kimodo generates one body only. |
+| A person shifts their weight onto their left leg and kicks their right leg high in front of them at head height, then returns to a fighting stance. | Kick reached chest height |
+| A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head. | Kick reached head height |
+| A person in a fighting stance spins around and swings their right leg in a wide arc above their head. | Spin worked, kick at hip height |
+| A person in a fighting stance spins around quickly and kicks their right leg extremely high, lifting their foot above their head. | Kick at hip height |
+| Separate prompt boxes: a spin, then the head-height kick prompt above | Kick still low |
+
+The Kimodo repo ships more example prompts, e.g. "A person is casually walking forward slowly" and "A person walks forward and picks something up from the ground". We haven't tested those here.
+
+Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Classifier-Free Guidance Text Weight and Constraint Weight (both default 2.0). Num Samples generates several takes at once. The timeline also supports constraints (Full-Body, 2D Root, hands, feet); we haven't tested them.
 
 ## Not done / possible next steps
 
