@@ -75,7 +75,8 @@ code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.86em; bac
 .agent label { font-size: 0.9rem; color: var(--ink-2); display: block; margin-bottom: 8px; }
 .hero > * { min-width: 0; }
 .agent .say { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.92rem; line-height: 1.5; color: var(--ink); }
-.agent .row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.agent .row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+.copies { font-size: 0.88rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .btn {
   font: 600 0.95rem/1 var(--text); border: 0; cursor: pointer; border-radius: 8px;
   padding: 11px 16px; text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
@@ -204,6 +205,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
         <div class="row">
           <button class="btn btn-go" data-copy-from="agent-say">Copy prompt</button>
           <a class="btn btn-quiet" href="#install">Install by hand</a>
+          <span class="copies" id="copies" aria-live="polite"></span>
         </div>
       </div>
     </div>
@@ -412,7 +414,23 @@ document.addEventListener("click", e => {
   if (!btn) return;
   const src = btn.dataset.copyFrom ? document.getElementById(btn.dataset.copyFrom) : btn.parentElement.querySelector("pre");
   copyText(src.textContent.trim(), btn);
+  if (btn.dataset.copyFrom === "agent-say") countCopy();
 });
+
+// Agent prompt copy counter (Abacus, a free public counting API). Counts once per browser session.
+const COUNTER = "https://abacus.jasoncameron.dev/%s/kimodo-mac/prompt-copies";
+const copiesEl = document.getElementById("copies");
+function showCopies(n) {
+  if (typeof n === "number" && n >= 0) copiesEl.textContent = `Copied ${n.toLocaleString()} ${n === 1 ? "time" : "times"}`;
+}
+function counter(action) {
+  return fetch(COUNTER.replace("%s", action)).then(r => r.ok ? r.json() : null).then(d => d && showCopies(d.value)).catch(() => {});
+}
+function countCopy() {
+  try { if (sessionStorage.getItem("counted")) return; sessionStorage.setItem("counted", "1"); } catch {}
+  counter("hit");
+}
+counter("get");
 </script>
 </body>
 </html>
