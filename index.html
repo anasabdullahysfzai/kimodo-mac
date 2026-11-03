@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kimodo on Mac</title>
+<meta name="description" content="Run NVIDIA Kimodo's text-to-motion demo locally on an Apple Silicon Mac: install steps, Mac fixes, and a library of tested motion prompts.">
+<meta property="og:title" content="Kimodo on Mac">
+<meta property="og:description" content="Type a sentence, get 3D human motion, locally on an M-series Mac.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #EEF0F7;
+  --paper-2: #E2E6F2;
+  --surface: #FFFFFF;
+  --ink: #1E2240;
+  --ink-2: #4E5478;
+  --line: #CDD2E6;
+  --body: #9AA6E8;
+  --body-deep: #7381D3;
+  --marker: #5B3FD6;
+  --clip: #56638F;
+  --clip-ink: #FFFFFF;
+  --go: #3F9E3C;
+  --go-ink: #FFFFFF;
+  --code-bg: #1E2240;
+  --code-ink: #E6E9F7;
+  --warn: #B4532A;
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --text: "Instrument Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #151830; --paper-2: #1C2040; --surface: #20254A; --ink: #E8EAF7; --ink-2: #A6ACD0;
+    --line: #2E3460; --clip: #5E6CA3; --code-bg: #0F1226; --go: #4FB34B; --warn: #E08A5F;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #151830; --paper-2: #1C2040; --surface: #20254A; --ink: #E8EAF7; --ink-2: #A6ACD0;
+  --line: #2E3460; --clip: #5E6CA3; --code-bg: #0F1226; --go: #4FB34B; --warn: #E08A5F;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 17px/1.6 var(--text); -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--marker); outline-offset: 3px; border-radius: 6px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.05; margin: 0; }
+h2 { font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 800; letter-spacing: -0.03em; }
+h3 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; }
+p { margin: 0; }
+code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.86em; background: var(--paper-2); padding: 0.1em 0.35em; border-radius: 5px; }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 18px; padding-bottom: 18px; }
+.brand { white-space: nowrap; font-family: var(--display); font-weight: 800; font-size: 1.15rem; letter-spacing: -0.02em; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 26px; height: 26px; }
+.top nav { display: flex; align-items: center; gap: 20px; font-size: 0.95rem; }
+.top nav a { text-decoration: none; color: var(--ink-2); }
+.top nav a:hover { color: var(--ink); }
+.views { display: block; height: 20px; }
+
+/* hero */
+.hero { display: grid; grid-template-columns: 1fr 1.05fr; gap: 48px; align-items: center; padding-top: 40px; padding-bottom: 72px; }
+.hero h1 { font-size: clamp(2.6rem, 6.2vw, 4.9rem); font-weight: 800; letter-spacing: -0.045em; line-height: 0.95; }
+.hero .lede { margin-top: 22px; font-size: 1.15rem; color: var(--ink-2); max-width: 34em; }
+.agent { margin-top: 32px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px; }
+.agent label { font-size: 0.9rem; color: var(--ink-2); display: block; margin-bottom: 8px; }
+.hero > * { min-width: 0; }
+.agent .say { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.92rem; line-height: 1.5; color: var(--ink); }
+.agent .row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.btn {
+  font: 600 0.95rem/1 var(--text); border: 0; cursor: pointer; border-radius: 8px;
+  padding: 11px 16px; text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-go { background: var(--go); color: var(--go-ink); }
+.btn-go:hover { filter: brightness(1.08); }
+.btn-quiet { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.btn-quiet:hover { box-shadow: inset 0 0 0 1px var(--ink-2); }
+
+/* stage: echoes the Kimodo viewer */
+.stage { border-radius: 18px; overflow: hidden; background: var(--surface); border: 1px solid var(--line); }
+.viewport { position: relative; height: 380px; overflow: hidden; background: linear-gradient(#fff 0%, #F3F4FA 55%, #E9ECF6 100%); }
+:root[data-theme="dark"] .viewport { background: linear-gradient(#262B52, #1B1F3D); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .viewport { background: linear-gradient(#262B52, #1B1F3D); } }
+.floor {
+  position: absolute; left: -50%; right: -50%; bottom: -40%; height: 90%;
+  background-image:
+    linear-gradient(to right, rgba(120,130,180,.28) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(120,130,180,.28) 1px, transparent 1px);
+  background-size: 44px 44px;
+  transform: perspective(420px) rotateX(62deg);
+  transform-origin: center top;
+  mask-image: linear-gradient(to bottom, transparent, #000 30%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%);
+}
+.figure { position: absolute; left: 50%; bottom: 18px; width: 300px; height: 330px; transform: translateX(-50%); }
+.figure .limb { stroke: var(--body); stroke-linecap: round; fill: none; }
+.figure .far { stroke: var(--body-deep); }
+.figure .skin { fill: var(--body); }
+.upper, .kthigh, .kshin, .playhead { animation-duration: 3.6s; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(.45,.05,.35,1); }
+.upper { transform-origin: 150px 175px; animation-name: lean; }
+.kthigh { transform-origin: 150px 175px; animation-name: thigh; }
+.kshin { transform-origin: 150px 230px; animation-name: shin; }
+@keyframes thigh { 0%,14% { transform: rotate(-8deg); } 34% { transform: rotate(-100deg); } 48%,60% { transform: rotate(-152deg); } 76% { transform: rotate(-92deg); } 92%,100% { transform: rotate(-8deg); } }
+@keyframes shin  { 0%,14% { transform: rotate(14deg); } 34% { transform: rotate(118deg); } 48%,60% { transform: rotate(4deg); } 76% { transform: rotate(108deg); } 92%,100% { transform: rotate(14deg); } }
+@keyframes lean  { 0%,14% { transform: rotate(0); } 48%,60% { transform: rotate(-9deg); } 92%,100% { transform: rotate(0); } }
+
+.timeline { border-top: 1px solid var(--line); padding: 10px 14px 14px; font-size: 0.78rem; color: var(--ink-2); }
+.ticks { display: flex; justify-content: space-between; font-family: var(--mono); padding: 0 2px 8px; }
+.track { position: relative; height: 34px; }
+.clip {
+  position: absolute; inset: 0 0 0 0; background: var(--clip); color: var(--clip-ink);
+  border-radius: 7px; display: flex; align-items: center; gap: 10px; padding: 0 10px; overflow: hidden; white-space: nowrap;
+  font-size: 0.82rem;
+}
+.dur { background: rgba(255,255,255,.18); border-radius: 5px; padding: 2px 6px; font-family: var(--mono); font-size: 0.72rem; }
+.playhead { position: absolute; top: -26px; bottom: -4px; width: 2px; background: var(--marker); animation-name: play; animation-timing-function: linear; }
+@keyframes play { from { left: 0%; } to { left: 100%; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .upper, .kthigh, .kshin, .playhead { animation: none; }
+  .kthigh { transform: rotate(-152deg); } .kshin { transform: rotate(4deg); } .upper { transform: rotate(-9deg); }
+  .playhead { left: 52%; }
+}
+
+/* sections */
+section { padding: 88px 0; border-top: 1px solid var(--line); }
+.head { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: end; margin-bottom: 44px; }
+.head p { color: var(--ink-2); max-width: 32em; }
+
+/* install steps: a real sequence */
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.step { display: grid; grid-template-columns: 72px 1fr; gap: 24px; padding: 28px 0; border-top: 1px solid var(--line); }
+.step:first-child { border-top: 0; padding-top: 0; }
+.step::before {
+  counter-increment: step; content: counter(step);
+  font-family: var(--display); font-weight: 800; font-size: 3rem; line-height: 0.9; color: var(--body);
+  letter-spacing: -0.04em;
+}
+.step > div { min-width: 0; }
+.cmd + p, .step p + p { margin-top: 10px; }
+.step h3 { margin-bottom: 8px; }
+.step p, .step li { color: var(--ink-2); max-width: 44em; }
+.step ul { margin: 8px 0 0; padding-left: 20px; }
+.note { margin-top: 14px; padding: 12px 14px; border-left: 3px solid var(--warn); background: var(--surface); border-radius: 0 8px 8px 0; font-size: 0.95rem; color: var(--ink); max-width: 44em; }
+.cmd { position: relative; margin-top: 14px; background: var(--code-bg); color: var(--code-ink); border-radius: 10px; }
+.cmd .tag { display: block; padding: 10px 14px 0; font-size: 0.8rem; color: #A9B1DC; }
+.cmd code { background: none; padding: 0; font-size: inherit; color: inherit; border-radius: 0; }
+.cmd pre { margin: 0; padding: 12px 96px 14px 14px; overflow-x: auto; font: 0.85rem/1.65 var(--mono); }
+.cmd .copy { position: absolute; top: 8px; right: 8px; }
+.copy {
+  font: 600 0.8rem/1 var(--text); padding: 8px 11px; border-radius: 7px; border: 0; cursor: pointer;
+  background: rgba(255,255,255,.12); color: #fff;
+}
+.copy:hover { background: rgba(255,255,255,.22); }
+.copy.done { background: var(--go); }
+details { margin-top: 14px; max-width: 44em; }
+summary { cursor: pointer; font-weight: 600; color: var(--ink); }
+details > *:not(summary) { margin-top: 10px; }
+
+/* prompt library: prompts drawn as timeline clips */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+.chip { font: 500 0.92rem/1 var(--text); padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.lib { display: grid; gap: 14px; }
+.p { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; padding: 16px 16px 16px 18px; background: var(--surface); border: 1px solid var(--line); border-left: 6px solid var(--clip); border-radius: 10px; }
+.p .text { font-size: 1.05rem; line-height: 1.45; }
+.p .meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.84rem; color: var(--ink-2); }
+.badge { padding: 3px 8px; border-radius: 5px; font-size: 0.78rem; font-weight: 600; }
+.b-tested { background: rgba(63,158,60,.14); color: var(--go); }
+.b-idea { background: var(--paper-2); color: var(--ink-2); }
+.p .copy { background: var(--clip); }
+.p .copy:hover { background: var(--ink); }
+.p .copy.done { background: var(--go); }
+.p.hidden { display: none; }
+.was { grid-column: 1 / -1; font-size: 0.9rem; color: var(--ink-2); }
+.was s { color: var(--warn); }
+
+/* rules */
+.rules { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 48px; margin-top: 56px; }
+.rule { padding: 18px 0; border-top: 1px solid var(--line); }
+.rule h3 { font-size: 1.05rem; margin-bottom: 6px; }
+.rule p { color: var(--ink-2); font-size: 0.97rem; }
+
+/* troubleshooting */
+.fixes { display: grid; gap: 0; }
+.fix { padding: 18px 0; border-top: 1px solid var(--line); }
+.fix summary { font-family: var(--mono); font-size: 0.9rem; font-weight: 500; }
+.fix p { color: var(--ink-2); }
+
+footer { padding: 48px 0 64px; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 0.92rem; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: space-between; align-items: center; }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; padding-top: 16px; }
+  .head { grid-template-columns: 1fr; gap: 16px; }
+  .rules { grid-template-columns: 1fr; }
+  .top nav a.hide-sm { display: none; }
+}
+@media (max-width: 560px) {
+  .wrap { padding: 0 16px; }
+  .top nav { gap: 12px; }
+  .top nav a.hide-xs { display: none; }
+  .step { grid-template-columns: 1fr; gap: 6px; }
+  .step::before { font-size: 2.2rem; }
+  .viewport { height: 320px; }
+  .figure { transform: translateX(-50%) scale(.85); transform-origin: bottom center; }
+  .p { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header class="wrap top">
+  <a class="brand" href="#">
+    <svg viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="5" r="3.2" fill="#9AA6E8"/><path d="M13 9v8M13 17l-4 7M13 17l7-4M13 11l-5 3M13 11l5-2" stroke="#9AA6E8" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>
+    Kimodo on Mac
+  </a>
+  <nav>
+    <a class="hide-sm" href="#install">Install</a>
+    <a class="hide-sm" href="#prompts">Prompts</a>
+    <a class="hide-sm" href="#fixes">Fixes</a>
+    <a class="hide-xs" href="https://github.com/anasabdullahysfzai/kimodo-mac">GitHub</a>
+    <img class="views" src="https://visitor-badge.laobi.icu/badge?page_id=anasabdullahysfzai.kimodo-mac&left_text=views" alt="Page views">
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <h1>Type a sentence. Watch a body move. On your Mac.</h1>
+      <p class="lede">NVIDIA's Kimodo turns text into 3D human motion. It was built for Linux and NVIDIA GPUs. This guide gets its interactive demo running locally on Apple Silicon, with every fix we needed along the way.</p>
+      <div class="agent">
+        <label for="agent-say">Using Claude Code or another coding agent? Paste this:</label>
+        <div class="say" id="agent-say">Follow https://github.com/anasabdullahysfzai/kimodo-mac to install Kimodo on this Mac. Run downloads and servers in a real terminal, not a sandboxed shell.</div>
+        <div class="row">
+          <button class="btn btn-go" data-copy-from="agent-say">Copy prompt</button>
+          <a class="btn btn-quiet" href="#install">Install by hand</a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="stage" aria-label="A figure throws a head-height kick, generated from the prompt shown below it">
+      <div class="viewport">
+        <div class="floor"></div>
+        <svg class="figure" viewBox="0 0 300 330" aria-hidden="true">
+          <ellipse cx="150" cy="300" rx="52" ry="9" fill="rgba(60,70,130,.12)"/>
+          <ellipse cx="150" cy="300" rx="22" ry="5" fill="none" stroke="#5B3FD6" stroke-width="3"/>
+          <!-- support leg -->
+          <path class="limb far" d="M150 175 L144 236 L146 296" stroke-width="17"/>
+          <path class="limb far" d="M146 296 L160 298" stroke-width="10"/>
+          <!-- upper body leans back on the kick -->
+          <g class="upper">
+            <path class="limb far" d="M148 120 L164 146 L170 104" stroke-width="11"/>
+            <path class="limb" d="M150 172 L152 114" stroke-width="24"/>
+            <circle class="skin" cx="153" cy="84" r="16"/>
+            <path class="limb" d="M153 120 L178 140 L182 98" stroke-width="11"/>
+          </g>
+          <!-- kicking leg -->
+          <g class="kthigh">
+            <path class="limb" d="M150 175 L150 230" stroke-width="19"/>
+            <g class="kshin">
+              <path class="limb" d="M150 230 L150 292 L164 294" stroke-width="15"/>
+            </g>
+          </g>
+        </svg>
+      </div>
+      <div class="timeline">
+        <div class="ticks"><span>0</span><span>21</span><span>42</span><span>63</span><span>84</span><span>105</span></div>
+        <div class="track">
+          <div class="clip"><span class="dur">3.0 s</span>A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.</div>
+          <div class="playhead"></div>
+        </div>
+      </div>
+    </figure>
+  </div>
+
+  <section id="install">
+    <div class="wrap">
+      <div class="head">
+        <h2>Install, step by step</h2>
+        <p>Tested on an M5 Pro MacBook Pro with 48 GB of memory, macOS 26, Python 3.11 and torch 2.15. Plan on about an hour, most of it spent downloading.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <div>
+            <h3>Check you have what it needs</h3>
+            <ul>
+              <li>An Apple Silicon Mac with 32 GB or more of memory. The text encoder alone is a 16 GB language model.</li>
+              <li>About 25 GB of free disk, plus <code>uv</code> and <code>git</code> (<code>brew install uv</code>).</li>
+              <li>Hugging Face access to <a href="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct">Meta-Llama-3-8B-Instruct</a>. Request it, wait for the approval email, then log in with a Read token.</li>
+            </ul>
+            <div class="cmd"><span class="tag">Log in, then confirm access. It should print 200.</span>
+<pre><code>hf auth login
+curl -s -o /dev/null -w "%{http_code}\n" -I -H "Authorization: Bearer $(cat ~/.cache/huggingface/token)" https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/resolve/main/config.json</code></pre><button class="copy">Copy</button></div>
+            <p class="note">OpenRouter or any chat API can't stand in for Llama here. Kimodo reads the model's internal hidden states, so the weights have to run on your Mac.</p>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Clone Kimodo and create the environment</h3>
+            <div class="cmd"><pre><code>mkdir -p ~/kimodo-local &amp;&amp; cd ~/kimodo-local
+git clone https://github.com/nv-tlabs/kimodo.git &amp;&amp; cd kimodo
+uv venv --python 3.11 .venv &amp;&amp; source .venv/bin/activate
+uv pip install torch
+python -c "import torch; print(torch.backends.mps.is_available())"</code></pre><button class="copy">Copy</button></div>
+            <p>The last line should print <code>True</code>.</p>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Install without the motion-correction add-on</h3>
+            <p>Kimodo bundles a C++ extension written with Intel-only SSE/AVX instructions, so it can't compile for Apple Silicon. It only powers the optional Post Processing step, so skip it.</p>
+            <div class="cmd"><pre><code>SKIP_MOTION_CORRECTION_IN_SETUP=1 uv pip install -e ".[all]"</code></pre><button class="copy">Copy</button></div>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Turn Post Processing off by default</h3>
+            <p>The demo turns Post Processing on by default, and without the add-on every generation would fail. This switches the default off.</p>
+            <div class="cmd"><pre><code>sed -i '' 's/^INIT_POSTPROCESSING = True/INIT_POSTPROCESSING = False/' kimodo/demo/config.py</code></pre><button class="copy">Copy</button></div>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Download the models</h3>
+            <p>About 16 GB for Llama and 1.1 GB for Kimodo. If it stops, run it again and it resumes.</p>
+            <div class="cmd"><pre><code>hf download meta-llama/Meta-Llama-3-8B-Instruct --exclude "original/*"
+hf download nvidia/Kimodo-SOMA-RP-v1.2</code></pre><button class="copy">Copy</button></div>
+            <p class="note">Agents: Claude Code's sandbox blocks Hugging Face's file servers. Downloads stall at exactly 1.0 GB or fail with "No route to host". Run this in a real terminal.</p>
+            <details>
+              <summary>Still waiting on Meta's approval?</summary>
+              <p>Use the identical NousResearch re-upload in the meantime. Meta's Llama 3 license still applies. Afterwards, add <code>TEXT_ENCODERS_DIR="$HOME/kimodo-local/text_encoders"</code> in front of both launch commands in the next step.</p>
+              <div class="cmd"><pre><code>cd ~/kimodo-local
+for r in McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised; do hf download $r --local-dir text_encoders/$r; done
+sed -i '' 's#"meta-llama/Meta-Llama-3-8B-Instruct"#"NousResearch/Meta-Llama-3-8B-Instruct"#' text_encoders/McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp/adapter_config.json
+hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code></pre><button class="copy">Copy</button></div>
+            </details>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Start the text encoder, then the demo</h3>
+            <p>Use two terminals. Start the encoder first and wait for <code>Running on local URL: http://0.0.0.0:9550</code>.</p>
+            <div class="cmd"><span class="tag">Terminal 1: text encoder on the Mac GPU</span>
+<pre><code>cd ~/kimodo-local/kimodo &amp;&amp; source .venv/bin/activate &amp;&amp; PYTORCH_ENABLE_MPS_FALLBACK=1 TEXT_ENCODER_DEVICE=mps TEXT_ENCODER_TMP_FOLDER="$TMPDIR/text_encoder" kimodo_textencoder</code></pre><button class="copy">Copy</button></div>
+            <div class="cmd"><span class="tag">Terminal 2: demo at localhost:7860</span>
+<pre><code>cd ~/kimodo-local/kimodo &amp;&amp; source .venv/bin/activate &amp;&amp; PYTORCH_ENABLE_MPS_FALLBACK=1 kimodo_demo</code></pre><button class="copy">Copy</button></div>
+            <details>
+              <summary>Why the temp folder setting?</summary>
+              <p>On macOS, <code>/tmp</code> resolves to <code>/private/tmp</code>, which Gradio refuses to serve files from. Without the setting, the demo reports "Text encoder service is unreachable" and loads a second 16 GB copy of Llama on the CPU.</p>
+            </details>
+          </div>
+        </li>
+
+        <li class="step">
+          <div>
+            <h3>Generate your first motion</h3>
+            <p>Open <a href="http://localhost:7860">localhost:7860</a>, close the welcome dialog and click Generate. The default "A person walks forward." takes about a minute for 6 seconds of motion, because the motion model runs on the CPU. Leave the Post Processing checkbox off.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="prompts">
+    <div class="wrap">
+      <div class="head">
+        <h2>Prompts that move well</h2>
+        <p>Kimodo animates one body, with no props and no second person. Describe what the arms, legs and hands do. Prompts marked "tested" were run in the demo; the rest follow the same patterns.</p>
+      </div>
+
+      <div class="filters" role="group" aria-label="Filter prompts">
+        <button class="chip" aria-pressed="true" data-filter="all">All</button>
+        <button class="chip" aria-pressed="false" data-filter="combat">Combat</button>
+        <button class="chip" aria-pressed="false" data-filter="walk">Walking</button>
+        <button class="chip" aria-pressed="false" data-filter="hands">Hands and arms</button>
+        <button class="chip" aria-pressed="false" data-filter="character">Characters</button>
+      </div>
+
+      <div class="lib" id="lib"></div>
+
+      <div class="rules">
+        <div class="rule"><h3>Pose, not props</h3><p>"Holding a gun" means nothing to it. "Both arms extended in front of the chest, hands together" does.</p></div>
+        <div class="rule"><h3>Stance, intensity, landmark</h3><p>"In a fighting stance" plus "extremely high" plus "above their head" took a hip-height kick to head height.</p></div>
+        <div class="rule"><h3>One action per clip</h3><p>Put sequences in separate prompt boxes on the timeline. Click empty track space to add one, and drag its edge to resize.</p></div>
+        <div class="rule"><h3>When words run out, pin it</h3><p>Rare moves like spinning head kicks won't come from text alone. Add a Right Foot constraint at the peak frame and drag it into place.</p></div>
+        <div class="rule"><h3>Seed and text weight</h3><p>Change the seed for a different take, and note the seed of a good one. Text Weight around 3 follows wording more strictly; above 4 gets jittery.</p></div>
+        <div class="rule"><h3>Name sides and speed</h3><p>"Right leg", "left hand", "diagonally to the left", "slowly", "cautiously". Specific words give specific motion.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="fixes">
+    <div class="wrap">
+      <div class="head">
+        <h2>If something breaks</h2>
+        <p>Every error we hit getting this running, and what fixed it.</p>
+      </div>
+      <div class="fixes">
+        <details class="fix"><summary>403 … not in the authorized list</summary><p>Your Llama access isn't approved yet, or no token is set. Check the approval email, run <code>hf auth login</code>, or use the NousResearch copy from step 5.</p></details>
+        <details class="fix"><summary>Download stuck at 1.0 GB, or "No route to host"</summary><p>You're running inside a sandboxed agent shell. Run the download in a real terminal; rerunning resumes it.</p></details>
+        <details class="fix"><summary>unknown type name 'FORCE_INLINE' / unsupported option '-msse4.1'</summary><p>You're building the motion-correction add-on. Install with <code>SKIP_MOTION_CORRECTION_IN_SETUP=1</code> (step 3).</p></details>
+        <details class="fix"><summary>incompatible architecture (have 'x86_64', need 'arm64')</summary><p>An Intel <code>cmake</code> (e.g. MacPorts under Rosetta) built the extension. Skip the extension as in step 3.</p></details>
+        <details class="fix"><summary>motion_correction package is not installed</summary><p>The Post Processing checkbox is on. Turn it off, or apply step 4 so it starts off.</p></details>
+        <details class="fix"><summary>Text encoder service is unreachable, falling back…</summary><p>The encoder isn't running, or it's hitting the <code>/tmp</code> path issue. Stop the demo, restart the encoder with <code>TEXT_ENCODER_TMP_FOLDER</code> set, then start the demo again.</p></details>
+        <details class="fix"><summary>Tables of lora_A / lora_B "MISSING" and "UNEXPECTED"</summary><p>Harmless. The pinned library versions try to auto-load the adapter first, then Kimodo loads it correctly. Linux shows the same output.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>An unofficial community guide, not affiliated with NVIDIA. Kimodo is at <a href="https://github.com/nv-tlabs/kimodo">nv-tlabs/kimodo</a>.</p>
+    <p><a href="https://github.com/anasabdullahysfzai/kimodo-mac">Suggest a fix or a prompt on GitHub</a></p>
+  </div>
+</footer>
+
+<script>
+const PROMPTS = [
+  { cat: "combat", tested: "Reached head height", text: "A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.", dur: "3.0 s",
+    was: "A person kicks to the head of the other person" },
+  { cat: "combat", tested: "Reached chest height", text: "A person shifts their weight onto their left leg and kicks their right leg high in front of them at head height, then returns to a fighting stance.", dur: "4.0 s" },
+  { cat: "combat", text: "A person performs a high roundhouse kick with their right leg, their foot reaching the height of their head.", dur: "3.0 s" },
+  { cat: "combat", text: "A person in a fighting stance throws a fast punch with their right fist, extending their arm fully at head height.", dur: "2.0 s" },
+  { cat: "combat", text: "A person punches forward twice with both fists, then kicks high with their right leg.", dur: "4.0 s" },
+  { cat: "combat", text: "A person in a fighting stance raises their right knee sharply up to their chest.", dur: "2.0 s" },
+  { cat: "combat", text: "A person steps forward and swings their right arm diagonally downward from above their head.", dur: "2.5 s" },
+  { cat: "walk", tested: "Default demo prompt", text: "A person walks forward.", dur: "6.0 s" },
+  { cat: "walk", text: "A person crouches low and walks forward slowly and carefully with both hands held in front of their chest.", dur: "5.0 s" },
+  { cat: "walk", text: "A person walking forward quickly stumbles but maintains their balance.", dur: "4.0 s" },
+  { cat: "walk", text: "Initially standing still and calm, the person then starts jogging in a counterclockwise arc.", dur: "6.0 s" },
+  { cat: "walk", text: "A person runs forward and then leaps over an obstacle in front of them.", dur: "4.0 s" },
+  { cat: "hands", text: "A person walks forward slowly with both arms extended in front of their chest, hands together as if aiming.", dur: "5.0 s",
+    was: "Holding a gun and walking" },
+  { cat: "hands", text: "A person walks slowly with their right hand held up next to their right ear.", dur: "5.0 s", was: "Walking while on the phone" },
+  { cat: "hands", text: "A person walks forward casually while raising their right hand to their mouth.", dur: "5.0 s", was: "Drinking coffee while walking" },
+  { cat: "hands", text: "A person walks forward carrying a large object in front of them with both hands.", dur: "5.0 s" },
+  { cat: "hands", text: "A person walks diagonally to the left and waves at someone on their right.", dur: "5.0 s" },
+  { cat: "hands", text: "A person picks up an object in front of them with two hands and places it to the left side.", dur: "4.0 s" },
+  { cat: "character", text: "A zombie with both arms extended forward walks with an uneven gait at a slow pace.", dur: "6.0 s" },
+  { cat: "character", text: "A person is doing a hip hop dance while moving around.", dur: "6.0 s" },
+  { cat: "character", text: "A person walking forward suddenly jerks backward, stumbles, and regains their balance.", dur: "4.0 s", was: "Getting shot while walking" }
+];
+
+const lib = document.getElementById("lib");
+lib.innerHTML = PROMPTS.map((p, i) => `
+  <article class="p" data-cat="${p.cat}">
+    <p class="text" id="p${i}">${p.text}</p>
+    <button class="copy" data-copy-from="p${i}">Copy</button>
+    <div class="meta">
+      <span class="dur" style="background:var(--paper-2);color:var(--ink-2)">${p.dur}</span>
+      ${p.tested ? `<span class="badge b-tested">Tested: ${p.tested}</span>` : `<span class="badge b-idea">Suggested</span>`}
+    </div>
+    ${p.was ? `<p class="was">Instead of <s>${p.was}</s></p>` : ""}
+  </article>`).join("");
+
+document.querySelectorAll(".chip").forEach(chip => chip.addEventListener("click", () => {
+  document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === chip));
+  const f = chip.dataset.filter;
+  lib.querySelectorAll(".p").forEach(el => el.classList.toggle("hidden", f !== "all" && el.dataset.cat !== f));
+}));
+
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const t = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(t); t.select(); document.execCommand("copy"); t.remove();
+  }
+  const label = btn.textContent;
+  btn.textContent = "Copied"; btn.classList.add("done");
+  setTimeout(() => { btn.textContent = label; btn.classList.remove("done"); }, 1400);
+}
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".copy, [data-copy-from]");
+  if (!btn) return;
+  const src = btn.dataset.copyFrom ? document.getElementById(btn.dataset.copyFrom) : btn.parentElement.querySelector("pre");
+  copyText(src.textContent.trim(), btn);
+});
+</script>
+</body>
+</html>

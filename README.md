@@ -27,7 +27,7 @@ Install NVIDIA Kimodo (https://github.com/nv-tlabs/kimodo), a text-to-3D-human-m
    - Create a **Read** token at https://huggingface.co/settings/tokens and run `hf auth login`. Check with `hf auth whoami`.
    - Verify access (should print `200`, not `403`):
      ```bash
-     curl -s -o /dev/null -w "%{http_code}\n" -I -H "Authorization: Bearer $(hf auth token 2>/dev/null || python3 -c 'from huggingface_hub import get_token; print(get_token())')" https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/resolve/main/config.json
+     curl -s -o /dev/null -w "%{http_code}\n" -I -H "Authorization: Bearer $(cat ~/.cache/huggingface/token)" https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/resolve/main/config.json
      ```
    - OpenRouter or any chat API **cannot** replace this: Kimodo reads Llama's internal hidden states through LLM2Vec, so the weights must run locally.
 
