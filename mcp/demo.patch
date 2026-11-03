@@ -1,0 +1,32 @@
+diff --git a/kimodo/demo/app.py b/kimodo/demo/app.py
+index a84fea1..6e8e976 100644
+--- a/kimodo/demo/app.py
++++ b/kimodo/demo/app.py
+@@ -71,6 +71,14 @@ class Demo:
+ 
+         # Per-client sessions
+         self.client_sessions: dict[int, ClientSession] = {}
++        # local: follow the Kimodo MCP server (kimodo-mac repo) when it is installed in this venv
++        self.live_loaders = {}
++        try:
++            from kimodo_mcp.demo_live import start as follow_mcp
++
++            follow_mcp(self)
++        except ImportError:
++            pass
+         self.start_direction_markers: dict[int, viser_utils.WaypointMesh] = {}
+         self.grid_handles: dict[int, viser.GridHandle] = {}
+ 
+diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
+index 7d9f5e3..75248c4 100644
+--- a/kimodo/demo/ui.py
++++ b/kimodo/demo/ui.py
+@@ -2097,6 +2097,8 @@ def create_gui(
+             finally:
+                 loading_notif.remove()
+ 
++        demo.live_loaders[client_id] = load_example_from_path  # local: lets kimodo_mcp.demo_live follow the MCP server
++
+         @gui_load_example_button.on_click
+         def _(event: viser.GuiEvent) -> None:
+             event_client = event.client

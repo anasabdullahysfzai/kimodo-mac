@@ -193,6 +193,16 @@ Start a new Claude Code session, then ask for a motion, for example: *"Generate 
 
 `TEXT_ENCODER_MODE=api` makes the server reuse the running encoder service instead of loading a second copy of Llama. Optional env vars: `KIMODO_MCP_TAKES` (take folder), `KIMODO_MODEL` (default `kimodo-soma-rp`), `KIMODO_DEVICE` (default `cpu`; `mps` untested).
 
+### Watch it live in the demo (optional)
+
+A small patch makes the web demo follow the MCP server. Every new take loads into your open demo tab and starts playing, with its prompt on the timeline and locked keyframes shown on the tracks. When Claude renders frames, your view steps through those frames. Each step shows a notification with the take and its numbers.
+
+```bash
+cd ~/kimodo-local/kimodo && git apply ~/kimodo-local/kimodo-mac/mcp/demo.patch
+```
+
+Then restart `kimodo_demo`. It prints `[kimodo-mcp live] following .../motions/_live.json`. The patch adds 10 lines to `kimodo/demo/app.py` and `kimodo/demo/ui.py`: it registers each tab's built-in Load Example function and starts the watcher in `mcp/kimodo_mcp/demo_live.py`. Set `KIMODO_LIVE=0` to turn it off, or `git checkout kimodo/demo/app.py kimodo/demo/ui.py` to remove it.
+
 ### What we measured (M5 Pro, CPU, 100 diffusion steps)
 
 - Generation: 21.6 s for a 3 s take, 35 to 41 s for one 6 s take, 66 to 95 s for two or three 6 s samples at once. The first call also loads the model.

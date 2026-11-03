@@ -372,6 +372,10 @@ uv pip install --python ~/kimodo-local/kimodo/.venv/bin/python -e ~/kimodo-local
 claude mcp add kimodo -e TEXT_ENCODER_MODE=api -- ~/kimodo-local/kimodo/.venv/bin/kimodo-mcp</code></pre><button class="copy">Copy</button></div>
       <p style="margin-top:10px;color:var(--ink-2)">The check prints "check passed". Then start a new Claude Code session and ask for a motion.</p>
 
+      <h3>Watch it live in the demo</h3>
+      <p style="margin-top:8px;color:var(--ink-2)">Optional. With this patch, every take Claude makes loads into your open demo tab and plays, and your view steps through the frames Claude is inspecting. Restart <code>kimodo_demo</code> after applying it.</p>
+      <div class="cmd"><pre><code>cd ~/kimodo-local/kimodo &amp;&amp; git apply ~/kimodo-local/kimodo-mac/mcp/demo.patch</code></pre><button class="copy">Copy</button></div>
+
       <div class="rules">
         <div class="rule"><h3>Generation time</h3><p>21.6 s for a 3 s take and 37 to 41 s for 6 s takes at 100 steps, on an M5 Pro CPU.</p></div>
         <div class="rule"><h3>Duration mattered</h3><p>The kick prompt reached head height as a 6 s take and peaked at 0.87 m as a 3 s take, same seed.</p></div>

@@ -89,6 +89,15 @@ def _load(take_id: str) -> dict:
     return dict(np.load(_take_dir(take_id) / "motion.npz"))
 
 
+def _live(take_id: str, title: str, body: str = "", frames: list[int] | None = None, play: bool = False) -> None:
+    """Tell a running Kimodo demo (patched with kimodo/demo/live.py) what is happening, so it can follow along."""
+    event = {"take_id": take_id, "path": str(TAKES / take_id), "title": title, "body": body,
+             "frames": frames, "play": play, "time": time.time()}
+    tmp = TAKES / "_live.json.tmp"
+    tmp.write_text(json.dumps(event))
+    tmp.replace(TAKES / "_live.json")  # atomic, so the demo never reads half a file
+
+
 def _new_id(prompt: str) -> str:
     TAKES.mkdir(parents=True, exist_ok=True)
     n = 1 + max((int(p.name[1:4]) for p in TAKES.glob("t[0-9][0-9][0-9]-*")), default=0)
@@ -180,6 +189,8 @@ def generate_motion(
         if dicts:
             (d / "constraints.json").write_text(json.dumps(dicts))
         takes.append({"take_id": take_id, "summary": metrics.one_line(m), "path": str(d)})
+    others = f" (+{len(takes) - 1} more: {', '.join(t['take_id'] for t in takes[1:])})" if len(takes) > 1 else ""
+    _live(takes[0]["take_id"], f"New take {takes[0]['take_id']}", takes[0]["summary"] + others, play=True)
     return {"generation_seconds": seconds, "takes": takes}
 
 
@@ -196,6 +207,7 @@ def render_motion(
     data = render.png_bytes(img)
     path = _take_dir(take_id) / f"sheet-{view}-{'-'.join(map(str, picked[:12]))}.png"
     path.write_bytes(data)
+    _live(take_id, f"Claude is looking at {take_id}", f"Frames {picked}, {view} view", frames=picked)
     return [Image(data=data, format="png"), f"{take_id}: frames {picked}, view {view}. Saved {path}"]
 
 
@@ -203,7 +215,9 @@ def render_motion(
 def analyze_motion(take_id: str) -> dict:
     """Measure a take: peak heights (and frame) of head, hands and feet relative to the head,
     root travel, heading change, lowest point, foot contact, and jitter. Y-up metres, 30 fps."""
-    return metrics.analyze(_load(take_id))
+    m = metrics.analyze(_load(take_id))
+    _live(take_id, f"Measuring {take_id}", metrics.one_line(m))
+    return m
 
 
 @mcp.tool()
