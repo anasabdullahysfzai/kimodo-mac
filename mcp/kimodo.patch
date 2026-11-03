@@ -30,3 +30,16 @@ index 7d9f5e3..75248c4 100644
          @gui_load_example_button.on_click
          def _(event: viser.GuiEvent) -> None:
              event_client = event.client
+diff --git a/kimodo/model/kimodo_model.py b/kimodo/model/kimodo_model.py
+index 7f4f2c3..d296733 100644
+--- a/kimodo/model/kimodo_model.py
++++ b/kimodo/model/kimodo_model.py
+@@ -176,6 +176,8 @@ class Kimodo(nn.Module):
+             constraint_lst_base = [
+                 constraint.crop_move(current_frame, current_frame + num_frame) for constraint in constraint_lst
+             ]  # this move temporally but not spatially
++            # local fix: drop constraints with no frames in this segment (empty ones crash the conditioning)
++            constraint_lst_base = [c for c in constraint_lst_base if len(c.frame_indices) > 0]
+ 
+             observed_motion, motion_mask = self.motion_rep.create_conditions_from_constraints_batched(
+                 constraint_lst_base,

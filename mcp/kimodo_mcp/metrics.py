@@ -12,6 +12,38 @@ def _joint_names(nbjoints: int) -> list[str]:
     return list(build_skeleton(nbjoints).bone_index)
 
 
+def segments(motion: dict, bounds: list[tuple[str, int, int]]) -> list[dict]:
+    """Per prompt segment: torso twist and how far each shoulder moved back relative to the hips.
+
+    twist_deg: signed angle of the shoulder line vs the hip line seen from above;
+    positive = right shoulder back (upper body turned right), negative = left shoulder back.
+    """
+    pj = np.asarray(motion["posed_joints"], dtype=np.float64)
+    idx = {n: i for i, n in enumerate(_joint_names(pj.shape[1]))}
+    xz = lambda name: pj[:, idx[name]][:, [0, 2]]  # noqa: E731
+    sh, hp = xz("LeftArm") - xz("RightArm"), xz("LeftLeg") - xz("RightLeg")
+    twist = np.degrees(np.arctan2(sh[:, 1], sh[:, 0]) - np.arctan2(hp[:, 1], hp[:, 0]))
+    twist = (twist + 180) % 360 - 180
+    hips = xz("Hips")
+    out = []
+    for text, a, b in bounds:
+        b = min(b, len(pj) - 1)
+        facing = np.array([-hp[a, 1], hp[a, 0]]) / (np.linalg.norm(hp[a]) + 1e-9)
+        seg = {"prompt": text, "frames": [a, b], "twist_start_deg": round(float(twist[a]), 0),
+               "twist_max_deg": round(float(twist[a:b + 1].max()), 0), "twist_max_frame": a + int(twist[a:b + 1].argmax()),
+               "twist_min_deg": round(float(twist[a:b + 1].min()), 0), "twist_min_frame": a + int(twist[a:b + 1].argmin()),
+               "twist_end_deg": round(float(twist[b]), 0)}
+        for side in ("Right", "Left"):
+            rel = (xz(f"{side}Arm") - hips)[a:b + 1] @ facing  # shoulder ahead of hips, along start facing
+            back = rel[0] - rel  # positive = moved backward
+            seg[f"{side.lower()}_shoulder_max_back_m"] = round(float(back.max()), 3)
+            seg[f"{side.lower()}_shoulder_max_back_frame"] = a + int(back.argmax())
+        seg["head_min_m"] = round(float(pj[a:b + 1, idx["Head"], 1].min()), 3)
+        seg["root_travel_m"] = round(float(np.linalg.norm(hips[b] - hips[a])), 3)
+        out.append(seg)
+    return out
+
+
 def analyze(motion: dict) -> dict:
     pj = np.asarray(motion["posed_joints"], dtype=np.float64)  # [T,J,3]
     T = len(pj)

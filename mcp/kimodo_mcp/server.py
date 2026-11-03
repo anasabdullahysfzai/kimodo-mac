@@ -10,6 +10,7 @@ Env vars:
 """
 
 import contextlib
+import functools
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from typing import Annotated
 import numpy as np
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Image
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from . import metrics, render
@@ -32,6 +34,25 @@ DEVICE = os.environ.get("KIMODO_DEVICE", "cpu")
 os.environ.setdefault("TEXT_ENCODER_MODE", "api")  # reuse the running encoder; never load a 2nd Llama
 
 mcp = MCPServer("kimodo")
+
+
+def tool(fn):
+    """Register an MCP tool whose failures reach the caller with their reason.
+
+    The SDK reports unexpected exceptions only as "Error executing tool X"; re-raising them as
+    ToolError keeps the type and message, so the caller can act on them.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except Exception as e:
+            raise ToolError(f"{type(e).__name__}: {e}") from e
+
+    return mcp.tool()(wrapper)
 _model = None
 
 
@@ -51,6 +72,36 @@ class Keyframes(BaseModel):
         default=(0.0, 0.0),
         description="Metres added to the copied root x and z, to place a borrowed pose where the character is (see analyze_motion root positions).",
     )
+    mirror: bool = Field(
+        default=False,
+        description="Swap left and right (mirror across world x = 0, the start facing), e.g. turn a left-side hit into a right-side one. Applied before offset_xz.",
+    )
+    face_heading_deg: float | None = Field(
+        default=None,
+        description="Turn each copied pose about the vertical axis so its hips face this heading (0 = +z, the start facing; "
+        "90 = +x). Keeps the pose's shape, incl. torso twist relative to the hips; removes a whole-body swivel.",
+    )
+
+
+def face_heading(global_rot_mats, posed_joints, root_idx: int, heading_deg: float):
+    """Rotate poses about the vertical axis through the root so the hips face heading_deg (torch)."""
+    import torch
+
+    fwd = global_rot_mats[:, root_idx, :, 2]  # hips local +z in world
+    delta = torch.deg2rad(torch.tensor(heading_deg, dtype=fwd.dtype)) - torch.atan2(fwd[:, 0], fwd[:, 2])
+    c, s, zero, one = torch.cos(delta), torch.sin(delta), torch.zeros_like(delta), torch.ones_like(delta)
+    ry = torch.stack([torch.stack([c, zero, s], -1), torch.stack([zero, one, zero], -1), torch.stack([-s, zero, c], -1)], -2)  # [N,3,3]
+    root = posed_joints[:, root_idx : root_idx + 1]
+    return ry[:, None] @ global_rot_mats, (posed_joints - root) @ ry.transpose(1, 2) + root
+
+
+def mirror_pose(global_rot_mats, posed_joints, names: list[str]):
+    """Mirror poses left<->right across the x = 0 plane: [N,J,3,3] rotations and [N,J,3] positions (torch)."""
+    import torch
+
+    perm = [names.index(n.replace("Left", "#").replace("Right", "Left").replace("#", "Right")) for n in names]
+    m = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=global_rot_mats.dtype))
+    return m @ global_rot_mats[:, perm] @ m, posed_joints[:, perm] * torch.tensor([-1.0, 1.0, 1.0], dtype=posed_joints.dtype)
 
 
 class PathPoint(BaseModel):
@@ -115,16 +166,21 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
         raise ValueError("keyframes_from.at_frames must have the same length as frames")
     src = _load(kf.take_id)
     skel = build_skeleton(src["global_rot_mats"].shape[1])
-    local = skel.global_rots_to_local_rots(torch.from_numpy(src["global_rot_mats"][kf.frames]))
+    rots, pos = torch.from_numpy(src["global_rot_mats"][kf.frames]), torch.from_numpy(src["posed_joints"][kf.frames])
+    if kf.mirror:
+        rots, pos = mirror_pose(rots, pos, list(skel.bone_index))
+    if kf.face_heading_deg is not None:
+        rots, pos = face_heading(rots, pos, skel.root_idx, kf.face_heading_deg)
+    local = skel.global_rots_to_local_rots(rots)
     return {
         "type": "fullbody",
         "frame_indices": at,
         "local_joints_rot": matrix_to_axis_angle(local).tolist(),
-        "root_positions": (src["posed_joints"][kf.frames, skel.root_idx] + [kf.offset_xz[0], 0.0, kf.offset_xz[1]]).tolist(),
+        "root_positions": (pos[:, skel.root_idx].numpy() + [kf.offset_xz[0], 0.0, kf.offset_xz[1]]).tolist(),
     }
 
 
-@mcp.tool()
+@tool
 def generate_motion(
     segments: Annotated[list[Segment], Field(min_length=1, description="One or more prompt segments played in order.")],
     seed: int = 42,
@@ -194,7 +250,7 @@ def generate_motion(
     return {"generation_seconds": seconds, "takes": takes}
 
 
-@mcp.tool()
+@tool
 def render_motion(
     take_id: str,
     frames: Annotated[int | list[int], Field(description="Number of evenly spaced frames, or exact frame numbers (30 fps).")] = 8,
@@ -211,16 +267,25 @@ def render_motion(
     return [Image(data=data, format="png"), f"{take_id}: frames {picked}, view {view}. Saved {path}"]
 
 
-@mcp.tool()
+@tool
 def analyze_motion(take_id: str) -> dict:
     """Measure a take: peak heights (and frame) of head, hands and feet relative to the head,
-    root travel, heading change, lowest point, foot contact, and jitter. Y-up metres, 30 fps."""
-    m = metrics.analyze(_load(take_id))
+    root travel, heading change, end pose, lowest point, foot contact, and jitter. Y-up metres, 30 fps.
+    Multi-prompt takes also get per-segment torso twist and shoulder movement ("segments")."""
+    motion = _load(take_id)
+    m = metrics.analyze(motion)
+    meta_path = _take_dir(take_id) / "meta.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        texts, secs = meta.get("texts") or [meta.get("text")], meta.get("durations") or [meta.get("duration")]
+        if len(texts) > 1 and None not in secs:
+            starts = np.cumsum([0] + [round(s * FPS) for s in secs])
+            m["segments"] = metrics.segments(motion, [(t, int(starts[i]), int(starts[i + 1]) - 1) for i, t in enumerate(texts)])
     _live(take_id, f"Measuring {take_id}", metrics.one_line(m))
     return m
 
 
-@mcp.tool()
+@tool
 def export_motion(
     take_id: str,
     format: Annotated[str, Field(description="bvh (SOMA skeleton, cm), npz (Kimodo), or mp4 (rendered video).")] = "bvh",
@@ -248,7 +313,7 @@ def export_motion(
     raise ValueError("format must be bvh, npz or mp4")
 
 
-@mcp.tool()
+@tool
 def list_takes() -> list[dict]:
     """List saved takes (newest last) with prompts, settings and a one-line summary."""
     out = []

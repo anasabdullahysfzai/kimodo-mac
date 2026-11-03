@@ -170,9 +170,9 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 
 | Tool | What it does |
 |---|---|
-| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time and `offset_xz` to move them in space), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, and `face_heading_deg` to turn the whole pose so the hips face a direction), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per-segment torso twist (shoulders vs. hips) and how far each shoulder moved back. |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -198,10 +198,14 @@ Start a new Claude Code session, then ask for a motion, for example: *"Generate 
 A small patch makes the web demo follow the MCP server. Every new take loads into your open demo tab and starts playing, with its prompt on the timeline and locked keyframes shown on the tracks. When Claude renders frames, your view steps through those frames. Each step shows a notification with the take and its numbers.
 
 ```bash
-cd ~/kimodo-local/kimodo && git apply ~/kimodo-local/kimodo-mac/mcp/demo.patch
+cd ~/kimodo-local/kimodo && git apply ~/kimodo-local/kimodo-mac/mcp/kimodo.patch
 ```
 
-Then restart `kimodo_demo`. It prints `[kimodo-mcp live] following .../motions/_live.json`. The patch adds 10 lines to `kimodo/demo/app.py` and `kimodo/demo/ui.py`: it registers each tab's built-in Load Example function and starts the watcher in `mcp/kimodo_mcp/demo_live.py`. Set `KIMODO_LIVE=0` to turn it off, or `git checkout kimodo/demo/app.py kimodo/demo/ui.py` to remove it.
+Then restart `kimodo_demo`. It prints `[kimodo-mcp live] following .../motions/_live.json`. The patch adds 10 lines to `kimodo/demo/app.py` and `kimodo/demo/ui.py`: it registers each tab's built-in Load Example function and starts the watcher in `mcp/kimodo_mcp/demo_live.py`. It also fixes a Kimodo crash (next section). Set `KIMODO_LIVE=0` to turn it off, or `git checkout kimodo/demo/app.py kimodo/demo/ui.py` to remove it.
+
+### Kimodo fix: locked poses in multi-prompt timelines
+
+In a multi-prompt timeline Kimodo crops every constraint to each segment. If a segment ends up with no frames of a constraint, generation fails with `RuntimeError: cannot reshape tensor of 0 elements`, which also happens in the web demo. `mcp/kimodo.patch` adds one line to `kimodo/model/kimodo_model.py` that drops empty constraints per segment. With it, locked poses in later segments keep their shape (3.7 cm max joint error in our test), but not their world position (0.62 m off), because Kimodo re-anchors each segment where the previous one ended.
 
 ### What we measured (M5 Pro, CPU, 100 diffusion steps)
 
@@ -259,6 +263,19 @@ Two metric bugs found on the way and fixed: heading from the hips' forward axis 
 ![Shot-from-behind death contact sheet](assets/mcp-death-sheet.png)
 
 <sub>Take t030, side view: walk, back arch at the hit (f46–54), knees, face-down fall, still.</sub>
+
+### Worked example: hit in the right shoulder, then the left (multi-prompt)
+
+Timeline: "A person stands still." (1 s), then a right-shoulder hit (2.5 s), then a left-shoulder hit (2.5 s), each prompt describing the shoulder jerking back and the upper body twisting toward it, then recovering. Targets (mine): each shoulder moves back at least 0.08 m in its own segment and more than the other shoulder, torso twist of at least 15° each way from the neutral stance, recovery, staying on the feet with little travel, and hips turning less than 30°.
+
+1. Baseline, 3 samples, then 3 more with stronger right-hit wording: the left hit worked every time (left shoulder 0.16–0.22 m back, twist -11° to -25°), the right hit didn't (twist change under 12° in 5 of 6 takes).
+2. Mirrored t036's left hit into the right segment (`mirror: true`, frames 108/113/120 at 38/43/50), and kept t036's own left hit. This crashed Kimodo; see the fix above. After the fix both hits landed, but the hips swivelled about 56° with each hit.
+3. Added `face_heading_deg: 0` to both borrowed poses, which turns each pose so its hips face forward while keeping the torso twist. Hip turn dropped to 11–13°.
+4. The right hit looked short of 15° only because the segment's first frame is already blended into the reaction (Kimodo's 5 transition frames). Measured from the neutral stance at frame 0, 2 of 3 takes pass every check. Best (t046): right shoulder 0.128 m back with +20° twist, left shoulder 0.152 m back with -21° twist, hip turn 10.8°, travel 0.25 m.
+
+![Shoulder hits contact sheet](assets/mcp-shoulder-hits-sheet.png)
+
+<sub>Take t046, front view (the character's right is on the left of the image): neutral, right-shoulder hit (f38–48), recovery, left-shoulder hit (f111–116), recovered.</sub>
 
 ### Limits
 
