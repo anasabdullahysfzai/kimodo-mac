@@ -4,6 +4,10 @@
 [![Kimodo](https://img.shields.io/badge/NVIDIA-Kimodo-76B900)](https://github.com/nv-tlabs/kimodo)
 [![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black)](#requirements-check-these-first)
 
+![Kimodo teaser](assets/kimodo-teaser.gif)
+
+<sub>Teaser animation from the official [Kimodo repository](https://github.com/nv-tlabs/kimodo) by NVIDIA, used under the [Apache License 2.0](assets/LICENSE-kimodo). See [assets/NOTICE.md](assets/NOTICE.md).</sub>
+
 
 > **How to use:** tell Claude Code (or another coding agent running natively on your Mac):
 > *"Follow https://github.com/anasabdullahysfzai/kimodo-mac to install Kimodo on this Mac."*

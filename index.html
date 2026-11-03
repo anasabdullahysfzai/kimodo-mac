@@ -68,7 +68,7 @@ code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.86em; bac
 .views { display: block; height: 20px; }
 
 /* hero */
-.hero { display: grid; grid-template-columns: 1fr 1.05fr; gap: 48px; align-items: center; padding-top: 40px; padding-bottom: 72px; }
+.hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 32px 48px; align-items: end; padding-top: 40px; padding-bottom: 72px; }
 .hero h1 { font-size: clamp(2.6rem, 6.2vw, 4.9rem); font-weight: 800; letter-spacing: -0.045em; line-height: 0.95; }
 .hero .lede { margin-top: 22px; font-size: 1.15rem; color: var(--ink-2); max-width: 34em; }
 .agent { margin-top: 32px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px; }
@@ -85,51 +85,10 @@ code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.86em; bac
 .btn-quiet { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
 .btn-quiet:hover { box-shadow: inset 0 0 0 1px var(--ink-2); }
 
-/* stage: echoes the Kimodo viewer */
-.stage { border-radius: 18px; overflow: hidden; background: var(--surface); border: 1px solid var(--line); }
-.viewport { position: relative; height: 380px; overflow: hidden; background: linear-gradient(#fff 0%, #F3F4FA 55%, #E9ECF6 100%); }
-:root[data-theme="dark"] .viewport { background: linear-gradient(#262B52, #1B1F3D); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .viewport { background: linear-gradient(#262B52, #1B1F3D); } }
-.floor {
-  position: absolute; left: -50%; right: -50%; bottom: -40%; height: 90%;
-  background-image:
-    linear-gradient(to right, rgba(120,130,180,.28) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(120,130,180,.28) 1px, transparent 1px);
-  background-size: 44px 44px;
-  transform: perspective(420px) rotateX(62deg);
-  transform-origin: center top;
-  mask-image: linear-gradient(to bottom, transparent, #000 30%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%);
-}
-.figure { position: absolute; left: 50%; bottom: 18px; width: 300px; height: 330px; transform: translateX(-50%); }
-.figure .limb { stroke: var(--body); stroke-linecap: round; fill: none; }
-.figure .far { stroke: var(--body-deep); }
-.figure .skin { fill: var(--body); }
-.upper, .kthigh, .kshin, .playhead { animation-duration: 3.6s; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(.45,.05,.35,1); }
-.upper { transform-origin: 150px 175px; animation-name: lean; }
-.kthigh { transform-origin: 150px 175px; animation-name: thigh; }
-.kshin { transform-origin: 150px 230px; animation-name: shin; }
-@keyframes thigh { 0%,14% { transform: rotate(-8deg); } 34% { transform: rotate(-100deg); } 48%,60% { transform: rotate(-152deg); } 76% { transform: rotate(-92deg); } 92%,100% { transform: rotate(-8deg); } }
-@keyframes shin  { 0%,14% { transform: rotate(14deg); } 34% { transform: rotate(118deg); } 48%,60% { transform: rotate(4deg); } 76% { transform: rotate(108deg); } 92%,100% { transform: rotate(14deg); } }
-@keyframes lean  { 0%,14% { transform: rotate(0); } 48%,60% { transform: rotate(-9deg); } 92%,100% { transform: rotate(0); } }
-
-.timeline { border-top: 1px solid var(--line); padding: 10px 14px 14px; font-size: 0.78rem; color: var(--ink-2); }
-.ticks { display: flex; justify-content: space-between; font-family: var(--mono); padding: 0 2px 8px; }
-.track { position: relative; height: 34px; }
-.clip {
-  position: absolute; inset: 0 0 0 0; background: var(--clip); color: var(--clip-ink);
-  border-radius: 7px; display: flex; align-items: center; gap: 10px; padding: 0 10px; overflow: hidden; white-space: nowrap;
-  font-size: 0.82rem;
-}
-.dur { background: rgba(255,255,255,.18); border-radius: 5px; padding: 2px 6px; font-family: var(--mono); font-size: 0.72rem; }
-.playhead { position: absolute; top: -26px; bottom: -4px; width: 2px; background: var(--marker); animation-name: play; animation-timing-function: linear; }
-@keyframes play { from { left: 0%; } to { left: 100%; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .upper, .kthigh, .kshin, .playhead { animation: none; }
-  .kthigh { transform: rotate(-152deg); } .kshin { transform: rotate(4deg); } .upper { transform: rotate(-9deg); }
-  .playhead { left: 52%; }
-}
+/* official Kimodo teaser */
+.teaser { grid-column: 1 / -1; margin: 8px 0 0; }
+.teaser img { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); background: #fff; }
+.teaser figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--ink-2); }
 
 /* sections */
 section { padding: 88px 0; border-top: 1px solid var(--line); }
@@ -212,8 +171,6 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
   .top nav a.hide-xs { display: none; }
   .step { grid-template-columns: 1fr; gap: 6px; }
   .step::before { font-size: 2.2rem; }
-  .viewport { height: 320px; }
-  .figure { transform: translateX(-50%) scale(.85); transform-origin: bottom center; }
   .p { grid-template-columns: 1fr; }
 }
 </style>
@@ -239,6 +196,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
     <div>
       <h1>Install NVIDIA Kimodo on an Apple Silicon Mac</h1>
       <p class="lede">Kimodo is NVIDIA's text-to-motion model. Its official setup targets Linux with NVIDIA GPUs. These are the steps and fixes that got its interactive demo running on a Mac.</p>
+    </div>
+    <div>
       <div class="agent">
         <label for="agent-say">Using Claude Code or another coding agent? Paste this:</label>
         <div class="say" id="agent-say">Follow https://github.com/anasabdullahysfzai/kimodo-mac to install Kimodo on this Mac. Run downloads and servers in a real terminal, not a sandboxed shell.</div>
@@ -249,38 +208,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
       </div>
     </div>
 
-    <figure class="stage" aria-label="Illustration of a high kick, with the prompt that produced a head-height kick in the demo">
-      <div class="viewport">
-        <div class="floor"></div>
-        <svg class="figure" viewBox="0 0 300 330" aria-hidden="true">
-          <ellipse cx="150" cy="300" rx="52" ry="9" fill="rgba(60,70,130,.12)"/>
-          <ellipse cx="150" cy="300" rx="22" ry="5" fill="none" stroke="#5B3FD6" stroke-width="3"/>
-          <!-- support leg -->
-          <path class="limb far" d="M150 175 L144 236 L146 296" stroke-width="17"/>
-          <path class="limb far" d="M146 296 L160 298" stroke-width="10"/>
-          <!-- upper body leans back on the kick -->
-          <g class="upper">
-            <path class="limb far" d="M148 120 L164 146 L170 104" stroke-width="11"/>
-            <path class="limb" d="M150 172 L152 114" stroke-width="24"/>
-            <circle class="skin" cx="153" cy="84" r="16"/>
-            <path class="limb" d="M153 120 L178 140 L182 98" stroke-width="11"/>
-          </g>
-          <!-- kicking leg -->
-          <g class="kthigh">
-            <path class="limb" d="M150 175 L150 230" stroke-width="19"/>
-            <g class="kshin">
-              <path class="limb" d="M150 230 L150 292 L164 294" stroke-width="15"/>
-            </g>
-          </g>
-        </svg>
-      </div>
-      <div class="timeline">
-        <div class="ticks"><span>0</span><span>21</span><span>42</span><span>63</span><span>84</span><span>105</span></div>
-        <div class="track">
-          <div class="clip">A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head.</div>
-          <div class="playhead"></div>
-        </div>
-      </div>
+    <figure class="teaser">
+      <img src="assets/kimodo-teaser.gif" width="1280" height="656" alt="Kimodo teaser: generated human and robot motions from text, and motions following path and pose constraints">
+      <figcaption>Teaser animation from the official <a href="https://github.com/nv-tlabs/kimodo">Kimodo repository</a> by NVIDIA, used under the <a href="assets/LICENSE-kimodo">Apache License 2.0</a>.</figcaption>
     </figure>
   </div>
 
