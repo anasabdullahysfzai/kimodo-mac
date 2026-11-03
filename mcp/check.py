@@ -87,4 +87,11 @@ for view in render.VIEWS:
     assert body > 0.01, f"{view}: no body pixels drawn ({body:.4f})"
     if view == "side":
         img.save(Path(__file__).parent / "check_sheet.png")
+
+# turn_deg: a fixed rotation about the vertical axis, valid even when the hips point at the floor.
+rt, pt = face_heading(rots, pos, skel30.root_idx, 0.0, by_deg=90.0)
+d0, d1 = (pos - pos[:, :1])[0, 5, [0, 2]], (pt - pt[:, :1])[0, 5, [0, 2]]
+assert torch.allclose(torch.stack([d0[1], -d0[0]]), d1, atol=1e-5)  # (x, z) -> (z, -x) is +90 deg toward +x
+_, fk_pos, _ = skel30.fk(skel30.global_rots_to_local_rots(rt), pt[:, skel30.root_idx])
+assert float((fk_pos - pt).abs().max()) < 0.01, "turned pose drifts under FK"
 print("check passed")

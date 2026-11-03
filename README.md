@@ -170,9 +170,9 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 
 | Tool | What it does |
 |---|---|
-| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, `face_heading_deg` to turn the whole pose so the hips face a direction, and `hips_heading_deg` to turn only the hips and legs, which converts a whole-body swivel into torso twist), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, `turn_deg` to rotate the pose by a fixed angle (works for lying poses too), `face_heading_deg` to turn the whole pose so the hips face a direction, and `hips_heading_deg` to turn only the hips and legs, which converts a whole-body swivel into torso twist), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per segment: torso twist (shoulders vs. hips), how far each shoulder moved back, and posture (hand height, how far the hands are in front of the hips and apart, torso lean, knee bend, feet apart). |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per segment: torso twist (shoulders vs. hips), how far each shoulder moved back, and posture (hips height, hand height, how far the hands are in front of the hips and apart, how much they wander, torso lean, knee bend, feet apart). |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -286,6 +286,20 @@ Timeline: "A person stands still." (1 s), then a right-shoulder hit (2.5 s), the
 ![Soldier shoulder hits contact sheet](assets/mcp-soldier-hits-sheet.png)
 
 <sub>Take t063, front view: ready stance, right-shoulder hit (f40–46), ready again, left-shoulder hit (f128–150), ready.</sub>
+
+### Worked example: kneeling soldier deaths (front, back, headshot)
+
+Each is two prompt segments: "A soldier kneels on one knee, aiming a rifle at eye level." (1.5 s), then the death (3 s). Targets (mine): crouched (hips at most 0.75 m) with hands raised and in front of the hips, held steady (under 5 cm of wander); hands drop on the hit; head and hips under 0.3 m at the end, still, less than 1 m of travel; and the fall direction of each variant. In every take the kneeling aim held: hips 0.39–0.48 m, hands 0.67–0.78 m and 0.53–0.65 m in front, 1–3 cm of wander. The hands sit below eye level; a more explicit "rifle butt against the shoulder, cheek on the stock" prompt didn't raise them.
+
+- **Front, collapses forward:** "A soldier kneeling on one knee aiming a rifle is shot in the chest, drops the rifle and collapses forward onto the ground, then lies still." Text alone worked: 2 of 3 passed. t093 falls within 7° of straight ahead and lies still (2.8 cm of end movement).
+- **Back, falls backward:** "A soldier kneeling on one knee with a rifle is shot from behind and falls backward onto the ground, then lies still." Text alone fell forward in 3 of 3 (10–46°), as did 9 earlier takes worded "falls backward". A root path forcing the hips back didn't help either (still face-down). Without the soldier context, "A person crouching loses balance, falls over backward and lies flat on their back." fell backward in 3 of 3 (160–174°). Locking that take's (t082) mid-fall and lying poses into the soldier timeline passed in 3 of 3 (172–174°); t098 is the pick.
+- **Headshot, slumps sideways:** "A soldier kneeling on one knee is shot in the head and slumps sideways to the ground." Text alone, and 6 plain "slumps / topples sideways" takes, all fell forward (6–29°). Turning t093's lying pose 90° with `turn_deg` and moving it beside the kneeling spot (`offset_xz: [0.38, -0.59]`) passed in 3 of 3 (84–85°, 0.35–0.38 m travel). t110 is the pick.
+
+![Kneel death, front](assets/mcp-kneel-death-front.png)
+![Kneel death, back](assets/mcp-kneel-death-back.png)
+![Kneel death, headshot](assets/mcp-kneel-death-headshot.png)
+
+<sub>Takes t093 (side view), t098 (side view) and t110 (front view, the character's left is on the right of the image).</sub>
 
 ### Limits
 

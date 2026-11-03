@@ -43,6 +43,9 @@ def segments(motion: dict, bounds: list[tuple[str, int, int]]) -> list[dict]:
         seg["hands_height_m"] = round(float(hands[:, 1].mean()), 3)
         seg["hands_forward_of_hips_m"] = round(float(((hands[:, [0, 2]] - hips[a:b + 1]) @ facing).mean()), 3)
         seg["hands_apart_m"] = round(float(np.linalg.norm(pj[a:b + 1, idx["LeftHand"]] - pj[a:b + 1, idx["RightHand"]], axis=1).mean()), 3)
+        # how much the hands wander around their mean position (small = steady, e.g. holding an aim)
+        seg["hands_wander_m"] = round(float(np.linalg.norm(hands - hands.mean(0), axis=1).mean()), 3)
+        seg["hips_height_m"] = round(float(pj[a:b + 1, idx["Hips"], 1].mean()), 3)
         spine = pj[a:b + 1, idx["Neck1"]] - pj[a:b + 1, idx["Hips"]]
         seg["torso_lean_deg"] = round(float(np.degrees(np.arccos(spine[:, 1] / np.linalg.norm(spine, axis=1))).mean()), 0)
         knees = []

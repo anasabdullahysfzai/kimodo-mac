@@ -81,6 +81,12 @@ class Keyframes(BaseModel):
         description="Turn each copied pose about the vertical axis so its hips face this heading (0 = +z, the start facing; "
         "90 = +x). Keeps the pose's shape, incl. torso twist relative to the hips; removes a whole-body swivel.",
     )
+    turn_deg: float = Field(
+        default=0.0,
+        description="Rotate each copied pose by this many degrees about the vertical axis through the root "
+        "(positive = toward +x, the character's left at the start). Works for any pose, incl. lying down, "
+        "e.g. turn a forward fall's lying pose 90 degrees to make a sideways fall. Applied after mirror.",
+    )
     hips_heading_deg: float | None = Field(
         default=None,
         description="Turn only the hips and legs (about the root) so the hips face this heading; the upper body keeps "
@@ -89,7 +95,7 @@ class Keyframes(BaseModel):
     )
 
 
-def face_heading(global_rot_mats, posed_joints, root_idx: int, heading_deg: float, joints=None, attach=None):
+def face_heading(global_rot_mats, posed_joints, root_idx: int, heading_deg: float, joints=None, attach=None, by_deg=None):
     """Rotate poses about the vertical axis through the root so the hips face heading_deg (torch).
 
     joints: indices to rotate (default all); the rest keep their world orientation. attach: the joint where
@@ -100,6 +106,8 @@ def face_heading(global_rot_mats, posed_joints, root_idx: int, heading_deg: floa
 
     fwd = global_rot_mats[:, root_idx, :, 2]  # hips local +z in world
     delta = torch.deg2rad(torch.tensor(heading_deg, dtype=fwd.dtype)) - torch.atan2(fwd[:, 0], fwd[:, 2])
+    if by_deg is not None:  # rotate by a fixed angle instead of aiming the hips at heading_deg
+        delta = torch.full_like(delta, float(torch.deg2rad(torch.tensor(by_deg))))
     c, s, zero, one = torch.cos(delta), torch.sin(delta), torch.zeros_like(delta), torch.ones_like(delta)
     ry = torch.stack([torch.stack([c, zero, s], -1), torch.stack([zero, one, zero], -1), torch.stack([-s, zero, c], -1)], -2)  # [N,3,3]
     root = posed_joints[:, root_idx : root_idx + 1]
@@ -193,6 +201,8 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
     rots, pos = torch.from_numpy(src["global_rot_mats"][kf.frames]), torch.from_numpy(src["posed_joints"][kf.frames])
     if kf.mirror:
         rots, pos = mirror_pose(rots, pos, list(skel.bone_index))
+    if kf.turn_deg:
+        rots, pos = face_heading(rots, pos, skel.root_idx, 0.0, by_deg=kf.turn_deg)
     if kf.face_heading_deg is not None:
         rots, pos = face_heading(rots, pos, skel.root_idx, kf.face_heading_deg)
     if kf.hips_heading_deg is not None:
