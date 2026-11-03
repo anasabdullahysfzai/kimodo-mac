@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kimodo-mcp"
+version = "0.1.0"
+description = "MCP server to generate, render, measure and refine NVIDIA Kimodo motions"
+requires-python = ">=3.10"
+# kimodo itself comes from the Kimodo venv this is installed into
+dependencies = ["mcp>=2.3,<3"]
+
+[project.scripts]
+kimodo-mcp = "kimodo_mcp.server:main"
+
+[tool.setuptools]
+packages = ["kimodo_mcp"]

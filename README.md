@@ -154,10 +154,57 @@ Results from our own runs in the demo (Kimodo-SOMA-RP-v1.2, default settings):
 | A person in a fighting stance spins around and swings their right leg in a wide arc above their head. | Spin worked, kick at hip height |
 | A person in a fighting stance spins around quickly and kicks their right leg extremely high, lifting their foot above their head. | Kick at hip height |
 | Separate prompt boxes: a spin, then the head-height kick prompt above | Kick still low |
+| The head-height kick prompt as a 3 s take via the MCP server (seed 42) | Peak 0.87 m. The same prompt at 6 s reached head height. |
 
 The Kimodo repo ships more example prompts, e.g. "A person is casually walking forward slowly" and "A person walks forward and picks something up from the ground". We haven't tested those here.
 
 Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Classifier-Free Guidance Text Weight and Constraint Weight (both default 2.0). Num Samples generates several takes at once. The timeline also supports constraints (Full-Body, 2D Root, hands, feet); we haven't tested them.
+
+## Use with Claude (MCP)
+
+`mcp/` is an MCP server that lets Claude Code generate Kimodo motions, look at them, measure them and refine them, without the web demo. It renders the SOMA body itself (numpy + PIL, no browser or OpenGL), so Claude can see each take as an image.
+
+![Kimodo MCP contact sheet](assets/mcp-kick-sheet.png)
+
+<sub>`render_motion` output for "A person in a fighting stance kicks their right leg extremely high, lifting their foot above their head." (6 s, seed 42), frames 45, 51 and 57. Guides every 0.5 m.</sub>
+
+| Tool | What it does |
+|---|---|
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock poses from an earlier take), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (also relative to the head), root travel, heading change, lowest point, foot contact, jitter. |
+| `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
+| `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
+
+Each take is saved to `~/kimodo-local/motions/<take id>/` as `motion.npz`, `meta.json` and (if used) `constraints.json`, the same layout as the demo's example folders.
+
+### Install
+
+Needs the install from the steps above, and the text encoder service from step 6 (Terminal A) running. The demo itself doesn't need to run.
+
+```bash
+cd ~/kimodo-local && git clone https://github.com/anasabdullahysfzai/kimodo-mac.git
+uv pip install --python ~/kimodo-local/kimodo/.venv/bin/python -e ~/kimodo-local/kimodo-mac/mcp
+~/kimodo-local/kimodo/.venv/bin/python ~/kimodo-local/kimodo-mac/mcp/check.py ~/kimodo-local/kimodo   # prints "check passed"
+claude mcp add kimodo -e TEXT_ENCODER_MODE=api -- ~/kimodo-local/kimodo/.venv/bin/kimodo-mcp
+```
+
+Start a new Claude Code session, then ask for a motion, for example: *"Generate a 6 second high kick with Kimodo, render the peak from the side, and check the foot reaches head height."*
+
+`TEXT_ENCODER_MODE=api` makes the server reuse the running encoder service instead of loading a second copy of Llama. Optional env vars: `KIMODO_MCP_TAKES` (take folder), `KIMODO_MODEL` (default `kimodo-soma-rp`), `KIMODO_DEVICE` (default `cpu`; `mps` untested).
+
+### What we measured (M5 Pro, CPU, 100 diffusion steps)
+
+- Generation: 21.6 s for a 3 s take, 36.7 to 41.2 s for 6 s takes. The first call also loads the model.
+- Rendering 8 frames: about 3 s. MP4 of a 6 s take: about 29 s.
+- The kick prompt above reached head height at 6 s (right ankle 1.495 m, head 1.506 m, toes 0.14 m above head in a keyframed re-take). At 3 s with the same seed it peaked at 0.87 m.
+- `keyframes_from` with frame 51 and a new seed held that pose to within 0.07 m.
+
+### Limits
+
+- Post-processing is off (it needs the x86-only extension).
+- Moving one joint to a target ("raise the foot 20 cm") isn't supported; it would need inverse kinematics. Lock poses with `keyframes_from` and re-roll instead.
+- Renders are flat-shaded and only for SOMA-skeleton models.
 
 ## Not done / possible next steps
 

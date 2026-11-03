@@ -150,6 +150,13 @@ details > *:not(summary) { margin-top: 10px; }
 .rule { padding: 18px 0; border-top: 1px solid var(--line); }
 .rule h3 { font-size: 1.05rem; margin-bottom: 6px; }
 .rule p { color: var(--ink-2); font-size: 0.97rem; }
+.tools { width: 100%; border-collapse: collapse; margin-top: 28px; font-size: 0.97rem; }
+.tools td { padding: 12px 12px 12px 0; border-top: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+.tools td:first-child { white-space: nowrap; color: var(--ink); }
+.shot { margin: 0 0 8px; }
+.shot img { display: block; max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); }
+.shot figcaption { margin-top: 8px; font-size: 0.88rem; color: var(--ink-2); }
+#mcp h3 { margin-top: 40px; }
 
 /* troubleshooting */
 .fixes { display: grid; gap: 0; }
@@ -186,6 +193,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
   <nav>
     <a class="hide-sm" href="#install">Install</a>
     <a class="hide-sm" href="#prompts">Prompts</a>
+    <a class="hide-sm" href="#mcp">MCP</a>
     <a class="hide-sm" href="#fixes">Fixes</a>
     <a class="hide-xs" href="https://github.com/anasabdullahysfzai/kimodo-mac">GitHub</a>
     <img class="views" src="https://visitor-badge.laobi.icu/badge?page_id=anasabdullahysfzai.kimodo-mac&left_text=views" alt="Page views">
@@ -330,6 +338,41 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
         <div class="rule"><h3>Wording raised the kick</h3><p>Adding "in a fighting stance", "extremely high" and "above their head" took the kick from chest height to head height.</p></div>
         <div class="rule"><h3>Spinning kicks stayed low</h3><p>A spinning head kick stayed around hip height with one prompt box, a shorter prompt, and separate spin and kick boxes.</p></div>
         <div class="rule"><h3>Settings in the demo</h3><p>Model Parameters has Seed, Denoising Steps (default 100), Text Weight and Constraint Weight (both default 2.0). Num Samples generates several takes at once.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="mcp">
+    <div class="wrap">
+      <div class="head">
+        <h2>Use with Claude (MCP)</h2>
+        <p>An MCP server in this repo lets Claude Code generate Kimodo motions, look at them, measure them and refine them, without the web demo. It draws the body itself, so it needs no browser.</p>
+      </div>
+      <figure class="shot">
+        <img src="assets/mcp-kick-sheet.png" width="900" height="300" alt="Three rendered frames of a high kick, with height guides every 0.5 m">
+        <figcaption>render_motion output: the fighting-stance kick prompt (6 s, seed 42), frames 45, 51 and 57.</figcaption>
+      </figure>
+      <table class="tools">
+        <tr><td><code>generate_motion</code></td><td>Prompt segments with durations, seed, steps, text and constraint weights, number of samples. Optional: lock poses from an earlier take, a root path, or raw Kimodo constraints.</td></tr>
+        <tr><td><code>render_motion</code></td><td>An image of chosen frames from the side, front, three-quarter or top.</td></tr>
+        <tr><td><code>analyze_motion</code></td><td>Peak heights and frames of head, hands, ankles and toes, root travel, heading change, foot contact, jitter.</td></tr>
+        <tr><td><code>export_motion</code></td><td>BVH, Kimodo NPZ, or an MP4 render.</td></tr>
+        <tr><td><code>list_takes</code></td><td>Saved takes with prompts, settings and a summary.</td></tr>
+      </table>
+
+      <h3>Install</h3>
+      <p class="note">Needs the install above and the text encoder from step 6 running. The demo doesn't need to run.</p>
+      <div class="cmd"><pre><code>cd ~/kimodo-local &amp;&amp; git clone https://github.com/anasabdullahysfzai/kimodo-mac.git
+uv pip install --python ~/kimodo-local/kimodo/.venv/bin/python -e ~/kimodo-local/kimodo-mac/mcp
+~/kimodo-local/kimodo/.venv/bin/python ~/kimodo-local/kimodo-mac/mcp/check.py ~/kimodo-local/kimodo
+claude mcp add kimodo -e TEXT_ENCODER_MODE=api -- ~/kimodo-local/kimodo/.venv/bin/kimodo-mcp</code></pre><button class="copy">Copy</button></div>
+      <p style="margin-top:10px;color:var(--ink-2)">The check prints "check passed". Then start a new Claude Code session and ask for a motion.</p>
+
+      <div class="rules">
+        <div class="rule"><h3>Generation time</h3><p>21.6 s for a 3 s take and 37 to 41 s for 6 s takes at 100 steps, on an M5 Pro CPU.</p></div>
+        <div class="rule"><h3>Duration mattered</h3><p>The kick prompt reached head height as a 6 s take and peaked at 0.87 m as a 3 s take, same seed.</p></div>
+        <div class="rule"><h3>Locking a pose</h3><p>Re-generating with the peak frame locked and a new seed held that pose to within 0.07 m.</p></div>
+        <div class="rule"><h3>Not supported</h3><p>Moving one joint to a target, which would need inverse kinematics. Post-processing stays off.</p></div>
       </div>
     </div>
   </section>
