@@ -359,7 +359,7 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
       <table class="tools">
         <tr><td><code>generate_motion</code></td><td>Prompt segments with durations, seed, steps, text and constraint weights, number of samples. Optional: lock poses copied from earlier takes (moved in time and space), a root path, or raw Kimodo constraints.</td></tr>
         <tr><td><code>render_motion</code></td><td>An image of chosen frames from the side, front, three-quarter or top.</td></tr>
-        <tr><td><code>analyze_motion</code></td><td>Peak heights and frames of head, hands, ankles and toes, with heading, torso lean and knee angle at each peak. Root travel, heading over time, foot contact, jitter and where it spikes.</td></tr>
+        <tr><td><code>analyze_motion</code></td><td>Peak heights and frames of head, hands, ankles and toes, with heading, torso lean and knee angle at each peak. End pose for falls (height, direction, fall time, stillness), root travel, heading over time, foot contact, jitter and where it spikes.</td></tr>
         <tr><td><code>export_motion</code></td><td>BVH, Kimodo NPZ, or an MP4 render.</td></tr>
         <tr><td><code>list_takes</code></td><td>Saved takes with prompts, settings and a summary.</td></tr>
       </table>
@@ -378,6 +378,7 @@ claude mcp add kimodo -e TEXT_ENCODER_MODE=api -- ~/kimodo-local/kimodo/.venv/bi
         <div class="rule"><h3>Locking a pose</h3><p>Re-generating with the peak frame locked and a new seed held that pose to within 0.07 m.</p></div>
         <div class="rule"><h3>Spinning head kick</h3><p>Text alone gave a spin or a high kick, not both. Locking two spin poses and one kick pose borrowed from separate takes gave a 360° spin with the toes 0.30 m above the head.</p></div>
         <div class="rule"><h3>Matching a reference</h3><p>Against a spinning hook kick sequence: rewording the prompt in the reference's terms, then locking the best take's spin poses and best kick pose, moved the kick to mid-spin with the torso leaning 52° and the knee at 159°.</p></div>
+        <div class="rule"><h3>Game death</h3><p>Shot from behind: walk, back arch at the hit, face-down fall in 0.67 s, still at the end. Built by locking the walk and end pose of one take and the arch of another.</p></div>
         <div class="rule"><h3>Not supported</h3><p>Moving one joint to a target, which would need inverse kinematics. Post-processing stays off.</p></div>
       </div>
     </div>

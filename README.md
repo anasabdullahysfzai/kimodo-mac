@@ -172,7 +172,7 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 |---|---|
 | `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time and `offset_xz` to move them in space), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel, heading every 0.5 s and the frames where turning happens, max torso lean, lowest point, foot contact, jitter and the frames where it spikes. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -235,6 +235,20 @@ Reference: a 6-frame spinning hook kick sequence diagram found through image sea
 ![Spinning hook kick contact sheet](assets/mcp-hook-kick-sheet.png)
 
 <sub>Take t020, side view, frames 30, 46, 52, 55, 62, 80: stance, chamber while turning, kick with back turned (2 frames), re-chamber, stance.</sub>
+
+### Worked example: game death, shot from behind
+
+Targets (common game-animation practice, my criteria): walking first (over 0.8 m/s in the first second), little turning (under 45°), face-down at the end (head and hips under 0.3 m, torso over 60° from vertical, pointing within 45° of the starting facing), a fast fall (head from 1.2 m to 0.4 m in 1.2 s or less), and lying still (under 0.03 m net movement in the last 0.5 s). Two more checks came from looking at renders: a back arch at the hit, and feet staying low after landing.
+
+1. One-sentence prompt, 4.5 s, 2 samples: "A person walking forward is shot in the back, stumbles forward and falls face down on the ground, then lies motionless." t024 had a clear back arch but started from standing and crawled down over about 2 s. t025 walked at 1.28 m/s and fell in 0.57 s, but didn't arch and its legs flipped up to 0.65 m after landing.
+2. A two-segment version (walk 1.5 s, then the hit and fall) fell well but barely walked (0.23–0.37 m/s). A three-segment version (walk, collapse, lie still, 1.5 s each) never fell in any of 3 samples.
+3. Locked t025's walk (frames 0, 20, 40) and final prone pose (105, 134), plus t024's arch (frame 37) moved to frame 46 with `offset_xz: [0.06, 1.73]`, 3 samples. Result (t030): passes all checks, back arch 9°, feet at most 0.30 m after landing, fall in 0.67 s, 0.014 m net movement at the end.
+
+Two metric bugs found on the way and fixed: heading from the hips' forward axis reported 250–280° of turning for bodies lying face-down (the axis points at the floor), and summed per-frame speed reported about 0.05 m/s for bodies that moved 2–3 cm in a second (model noise).
+
+![Shot-from-behind death contact sheet](assets/mcp-death-sheet.png)
+
+<sub>Take t030, side view: walk, back arch at the hit (f46–54), knees, face-down fall, still.</sub>
 
 ### Limits
 
