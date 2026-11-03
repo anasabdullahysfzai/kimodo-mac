@@ -43,16 +43,24 @@ def analyze(motion: dict) -> dict:
             "min_height_m": round(float(hips[:, 1].min()), 3),
         },
         "lowest_joint_height_m": round(float(pj[..., 1].min()), 3),
-        # mean joint acceleration; higher means jerkier motion
-        "jitter_m_per_s2": round(float(np.linalg.norm(np.diff(pj, 2, axis=0), axis=-1).mean() * FPS**2), 3),
     }
+    # mean joint acceleration per frame; higher means jerkier. Spikes often sit on locked keyframes.
+    acc = np.linalg.norm(np.diff(pj, 2, axis=0), axis=-1).mean(1) * FPS**2
+    out["jitter_m_per_s2"] = round(float(acc.mean()), 3)
+    out["jitter_spikes"] = [{"frame": int(i) + 1, "m_per_s2": round(float(acc[i]), 1)} for i in np.argsort(-acc)[:3]]
 
     gr = motion.get("global_rot_mats")
     if gr is not None:
         fwd = np.asarray(gr)[:, idx["Hips"], :, 2]  # hips local +Z in world
         heading = np.unwrap(np.arctan2(fwd[:, 0], fwd[:, 2]))
         out["heading_change_deg"] = round(float(np.degrees(heading[-1] - heading[0])), 1)
-        out["max_heading_turn_deg"] = round(float(np.degrees(np.abs(heading - heading[0]).max())), 1)
+        turn = np.degrees(heading - heading[0])
+        out["max_heading_turn_deg"] = round(float(np.abs(turn).max()), 1)
+        # when the turning happens: frames where it passes 10% and 90% of the largest turn
+        big = np.abs(turn).max()
+        if big > 45:
+            out["turn_window_frames"] = [int(np.argmax(np.abs(turn) >= 0.1 * big)), int(np.argmax(np.abs(turn) >= 0.9 * big))]
+        out["heading_every_0_5s_deg"] = {int(f): round(float(turn[f]), 0) for f in range(0, T, FPS // 2)}
 
     fc = motion.get("foot_contacts")
     if fc is not None:
@@ -66,6 +74,8 @@ def one_line(m: dict) -> str:
     p = m["peaks"]
     return (
         f"{m['duration_s']}s; R foot peak {p['RightFoot']['max_height_m']} m @f{p['RightFoot']['frame']} "
-        f"({p['RightFoot']['minus_head_height_m']:+} vs head); L foot peak {p['LeftFoot']['max_height_m']} m; "
-        f"root travel {m['root']['net_travel_m']} m; turn {m.get('heading_change_deg', 'n/a')} deg"
+        f"({p['RightFoot']['minus_head_height_m']:+} vs head), R toe {p['RightToeBase']['minus_head_height_m']:+} vs head; "
+        f"L foot peak {p['LeftFoot']['max_height_m']} m; root travel {m['root']['net_travel_m']} m; "
+        f"turn {m.get('heading_change_deg', 'n/a')} deg"
+        + (f" (frames {m['turn_window_frames'][0]}-{m['turn_window_frames'][1]})" if "turn_window_frames" in m else "")
     )

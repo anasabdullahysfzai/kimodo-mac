@@ -170,9 +170,9 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 
 | Tool | What it does |
 |---|---|
-| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock poses from an earlier take), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time and `offset_xz` to move them in space), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
-| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (also relative to the head), root travel, heading change, lowest point, foot contact, jitter. |
+| `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (also relative to the head), root travel, heading every 0.5 s and the frames where turning happens, lowest point, foot contact, jitter and the frames where it spikes. |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
 
@@ -195,10 +195,34 @@ Start a new Claude Code session, then ask for a motion, for example: *"Generate 
 
 ### What we measured (M5 Pro, CPU, 100 diffusion steps)
 
-- Generation: 21.6 s for a 3 s take, 36.7 to 41.2 s for 6 s takes. The first call also loads the model.
+- Generation: 21.6 s for a 3 s take, 35 to 41 s for one 6 s take, 66 to 95 s for two or three 6 s samples at once. The first call also loads the model.
 - Rendering 8 frames: about 3 s. MP4 of a 6 s take: about 29 s.
 - The kick prompt above reached head height at 6 s (right ankle 1.495 m, head 1.506 m, toes 0.14 m above head in a keyframed re-take). At 3 s with the same seed it peaked at 0.87 m.
 - `keyframes_from` with frame 51 and a new seed held that pose to within 0.07 m.
+
+### Worked example: a spinning head-height kick
+
+![Spinning kick contact sheet](assets/mcp-spin-kick-sheet.png)
+
+<sub>Take t010, side view, frames 60–110.</sub>
+
+Text alone didn't produce this: in the demo, and in 3 MCP samples of "A person in a fighting stance spins around quickly and kicks their right leg extremely high, lifting their foot above their head." (6 s), two takes spun about 360° but kicked at 0.22 m and 0.64 m. Steps that got there, all through the MCP tools:
+
+1. Generate a take that spins (t001: 370° max turn, frames 54–88) and a take that kicks high (t004: the non-spinning kick prompt, ankle 1.495 m at frame 51).
+2. Lock only the kick pose (t004 frame 51) at frame 98 of a new take: the kick landed, but the take didn't spin (75° max turn).
+3. Also lock spin poses from t001 at frames 60 and 75: it turned to 176° and then turned back (heading at frame 90: 63°).
+4. Lock t001 frames 75 and 85 (302°) so continuing the turn is shorter than reversing, plus the kick pose at frame 98, shifted `offset_xz: [-0.06, 0.40]` to where the spin ends. Result (t010): 360° spin, right ankle 0.19 m and toes 0.30 m above the head. Locking more frames (chamber, peak, retract) produced jitter spikes of up to 38.9 m/s² on the locked frames; locking fewer brought the peak down to 28.
+5. `constraint_weight: 1.0` (t012): 359° spin, toes 0.14 m above the head, mean jitter 4.84 vs 5.37.
+
+<details><summary>The final call</summary>
+
+```json
+{"segments": [{"prompt": "A person in a fighting stance spins around quickly and kicks their right leg extremely high, lifting their foot above their head.", "seconds": 6}],
+ "seed": 42, "num_samples": 2, "constraint_weight": 1.0,
+ "keyframes_from": [{"take_id": "t001-a-person-in-a-fighting", "frames": [75, 85]},
+                    {"take_id": "t004-a-person-in-a-fighting", "frames": [51], "at_frames": [98], "offset_xz": [-0.06, 0.40]}]}
+```
+</details>
 
 ### Limits
 

@@ -352,10 +352,14 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
         <img src="assets/mcp-kick-sheet.png" width="900" height="300" alt="Three rendered frames of a high kick, with height guides every 0.5 m">
         <figcaption>render_motion output: the fighting-stance kick prompt (6 s, seed 42), frames 45, 51 and 57.</figcaption>
       </figure>
+      <figure class="shot">
+        <img src="assets/mcp-spin-kick-sheet.png" width="1200" height="600" alt="Eight rendered frames of a spin followed by a head-height kick">
+        <figcaption>The spinning kick built with locked poses (take t010): turning from frame 52 to 93, kick peaking at frame 94.</figcaption>
+      </figure>
       <table class="tools">
-        <tr><td><code>generate_motion</code></td><td>Prompt segments with durations, seed, steps, text and constraint weights, number of samples. Optional: lock poses from an earlier take, a root path, or raw Kimodo constraints.</td></tr>
+        <tr><td><code>generate_motion</code></td><td>Prompt segments with durations, seed, steps, text and constraint weights, number of samples. Optional: lock poses copied from earlier takes (moved in time and space), a root path, or raw Kimodo constraints.</td></tr>
         <tr><td><code>render_motion</code></td><td>An image of chosen frames from the side, front, three-quarter or top.</td></tr>
-        <tr><td><code>analyze_motion</code></td><td>Peak heights and frames of head, hands, ankles and toes, root travel, heading change, foot contact, jitter.</td></tr>
+        <tr><td><code>analyze_motion</code></td><td>Peak heights and frames of head, hands, ankles and toes, root travel, heading over time, foot contact, jitter and where it spikes.</td></tr>
         <tr><td><code>export_motion</code></td><td>BVH, Kimodo NPZ, or an MP4 render.</td></tr>
         <tr><td><code>list_takes</code></td><td>Saved takes with prompts, settings and a summary.</td></tr>
       </table>
@@ -372,6 +376,7 @@ claude mcp add kimodo -e TEXT_ENCODER_MODE=api -- ~/kimodo-local/kimodo/.venv/bi
         <div class="rule"><h3>Generation time</h3><p>21.6 s for a 3 s take and 37 to 41 s for 6 s takes at 100 steps, on an M5 Pro CPU.</p></div>
         <div class="rule"><h3>Duration mattered</h3><p>The kick prompt reached head height as a 6 s take and peaked at 0.87 m as a 3 s take, same seed.</p></div>
         <div class="rule"><h3>Locking a pose</h3><p>Re-generating with the peak frame locked and a new seed held that pose to within 0.07 m.</p></div>
+        <div class="rule"><h3>Spinning head kick</h3><p>Text alone gave a spin or a high kick, not both. Locking two spin poses and one kick pose borrowed from separate takes gave a 360° spin with the toes 0.30 m above the head.</p></div>
         <div class="rule"><h3>Not supported</h3><p>Moving one joint to a target, which would need inverse kinematics. Post-processing stays off.</p></div>
       </div>
     </div>

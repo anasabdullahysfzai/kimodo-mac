@@ -42,7 +42,15 @@ class Segment(BaseModel):
 
 class Keyframes(BaseModel):
     take_id: str = Field(description="Existing take to copy full-body poses from.")
-    frames: list[int] = Field(description="Frame numbers (30 fps) whose pose is locked at the same frame in the new take.")
+    frames: list[int] = Field(description="Frame numbers (30 fps) in that take whose full-body pose (incl. root position) is copied.")
+    at_frames: list[int] | None = Field(
+        default=None,
+        description="Where to place those poses in the new take (same length as frames). Default: the same frame numbers.",
+    )
+    offset_xz: tuple[float, float] = Field(
+        default=(0.0, 0.0),
+        description="Metres added to the copied root x and z, to place a borrowed pose where the character is (see analyze_motion root positions).",
+    )
 
 
 class PathPoint(BaseModel):
@@ -93,14 +101,17 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
     from kimodo.geometry import matrix_to_axis_angle
     from kimodo.skeleton.registry import build_skeleton
 
+    at = kf.at_frames or kf.frames
+    if len(at) != len(kf.frames):
+        raise ValueError("keyframes_from.at_frames must have the same length as frames")
     src = _load(kf.take_id)
     skel = build_skeleton(src["global_rot_mats"].shape[1])
     local = skel.global_rots_to_local_rots(torch.from_numpy(src["global_rot_mats"][kf.frames]))
     return {
         "type": "fullbody",
-        "frame_indices": kf.frames,
+        "frame_indices": at,
         "local_joints_rot": matrix_to_axis_angle(local).tolist(),
-        "root_positions": src["posed_joints"][kf.frames, skel.root_idx].tolist(),
+        "root_positions": (src["posed_joints"][kf.frames, skel.root_idx] + [kf.offset_xz[0], 0.0, kf.offset_xz[1]]).tolist(),
     }
 
 
@@ -113,7 +124,7 @@ def generate_motion(
     constraint_weight: Annotated[float, Field(ge=0, le=5, description="How strictly to follow constraints (demo default 2.0).")] = 2.0,
     num_samples: Annotated[int, Field(ge=1, le=10, description="Takes generated at once; each gets its own take id.")] = 1,
     transition_frames: Annotated[int, Field(ge=1, le=10)] = 5,
-    keyframes_from: Keyframes | None = None,
+    keyframes_from: Annotated[list[Keyframes] | None, Field(description="Poses to lock, copied from earlier takes; several sources can be combined.")] = None,
     root_path: Annotated[list[PathPoint] | None, Field(description="Root positions the character must pass through.")] = None,
     constraints: Annotated[list[dict] | None, Field(description="Raw Kimodo constraint dicts (constraints.json format).")] = None,
 ) -> dict:
@@ -129,8 +140,8 @@ def generate_motion(
     texts = [s.prompt for s in segments]
     num_frames = [round(s.seconds * FPS) for s in segments]
     dicts = list(constraints or [])
-    if keyframes_from:
-        dicts.append(_keyframe_constraint(keyframes_from))
+    for kf in keyframes_from or []:
+        dicts.append(_keyframe_constraint(kf))
     if root_path:
         dicts.append({"type": "root2d", "frame_indices": [p.frame for p in root_path], "smooth_root_2d": [[p.x, p.z] for p in root_path]})
 
@@ -162,7 +173,7 @@ def generate_motion(
             "num_samples": 1, "seed": seed, "diffusion_steps": diffusion_steps,
             "cfg": {"enabled": True, "text_weight": text_weight, "constraint_weight": constraint_weight},
             "mcp": {"sample": i, "of": num_samples, "transition_frames": transition_frames,
-                    "keyframes_from": keyframes_from.model_dump() if keyframes_from else None,
+                    "keyframes_from": [kf.model_dump() for kf in keyframes_from or []],
                     "generated_s": seconds, "summary": metrics.one_line(m)},
         }
         (d / "meta.json").write_text(json.dumps(meta, indent=2))
