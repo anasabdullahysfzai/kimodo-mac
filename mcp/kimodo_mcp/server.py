@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -100,6 +101,11 @@ class Keyframes(BaseModel):
         description="Turn only the hips and legs (about the root) so the hips face this heading; the upper body keeps "
         "its world orientation. Converts a whole-body swivel into a torso twist (e.g. a hit that should leave the feet planted). "
         "Applied after face_heading_deg.",
+    )
+    only: list[str] | None = Field(
+        default=None,
+        description="Lock only these parts instead of the full body: any of LeftHand, RightHand, LeftFoot, RightFoot, Hips. "
+        "The hips' position and heading are always held too, so the root can't wander; the rest of the body is free.",
     )
 
 
@@ -230,6 +236,9 @@ def _new_id(prompt: str) -> str:
     return f"t{n:03d}-{slug}"
 
 
+END_EFFECTORS = ("LeftHand", "RightHand", "LeftFoot", "RightFoot", "Hips")
+
+
 def _keyframe_constraint(kf: Keyframes) -> dict:
     import torch
     from kimodo.geometry import matrix_to_axis_angle
@@ -254,8 +263,12 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
     if kf.upper_body_from:
         upper = _load(kf.upper_body_from[0])["global_rot_mats"][[kf.upper_body_from[1]]]
         local = mix_upper_body(local, skel.global_rots_to_local_rots(torch.from_numpy(upper)), list(skel.bone_index))
+    if kf.only:
+        bad = [j for j in kf.only if j not in END_EFFECTORS]
+        if bad:
+            raise ValueError(f"only can't lock {bad}: use any of {', '.join(END_EFFECTORS)}")
     return {
-        "type": "fullbody",
+        **({"type": "end-effector", "joint_names": kf.only} if kf.only else {"type": "fullbody"}),
         "frame_indices": at,
         "local_joints_rot": matrix_to_axis_angle(local).tolist(),
         "root_positions": (pos[:, skel.root_idx].numpy() + [kf.offset_xz[0], 0.0, kf.offset_xz[1]]).tolist(),
@@ -321,6 +334,37 @@ def _save_edit(parent_id: str, motion: dict, label: str, edit: dict) -> dict:
     return {"take_id": take_id, "parent": parent_id, "summary": metrics.one_line(m), "path": str(d)}
 
 
+def import_motion(motion: dict, prompts: list[tuple[str, int]]) -> str:
+    """Save a motion from the demo's view as a new take, so it can be edited. prompts: (text, frames)."""
+    skeleton, local, root = edit.motion_parts(motion)
+    new = edit.rebuild_motion(local, root, skeleton)
+    take_id = _new_id(prompts[0][0] if prompts else "demo motion")
+    d = TAKES / take_id
+    d.mkdir()
+    np.savez(d / "motion.npz", **new)
+    meta = {"num_samples": 1, "mcp": {"imported_from_demo": True, "summary": metrics.one_line(metrics.analyze(new))}}
+    (d / "meta.json").write_text(json.dumps(meta, indent=2))
+    _write_prompts(take_id, prompts or [("Motion from the demo", len(local))])
+    return take_id
+
+
+def _prompt_spans(meta: dict) -> list[tuple[str, int, int]]:
+    """(prompt, first frame, frame after last) for each of a take's prompts."""
+    texts, secs = meta.get("texts") or [meta.get("text")], meta.get("durations") or [meta.get("duration")]
+    edges = np.cumsum([0] + [round(x * FPS) for x in secs])
+    return [(t, int(edges[i]), int(edges[i + 1])) for i, t in enumerate(texts)]
+
+
+def _write_prompts(take_id: str, spans: list[tuple[str, int]]) -> None:
+    """Rewrite a take's prompts as (prompt, frames) so they add up to its length, for the demo and analyze_motion."""
+    path = TAKES / take_id / "meta.json"
+    meta = json.loads(path.read_text())
+    kept = [(t, int(n)) for t, n in spans if n > 0]
+    meta["texts"], meta["durations"] = [t for t, _ in kept], [n / FPS for _, n in kept]
+    meta.pop("text", None), meta.pop("duration", None)
+    path.write_text(json.dumps(meta, indent=2))
+
+
 @tool
 def generate_motion(
     segments: Annotated[list[Segment], Field(min_length=1, description="One or more prompt segments played in order.")],
@@ -384,11 +428,13 @@ def render_motion(
     take_id: str,
     frames: Annotated[int | list[int], Field(description="Number of evenly spaced frames, or exact frame numbers (30 fps).")] = 8,
     view: Annotated[str, Field(description="side (faces right), front, three-quarter, or top.")] = "side",
+    rifle_frame: Annotated[int | None, Field(description="Draw a rifle fixed in the right hand, aimed through the left hand at this frame (see check_rifle).")] = None,
 ) -> list:
     """Render frames of a take as one contact-sheet image (body mesh, 0.5 m height guides, frame labels)."""
     motion = _load(take_id)
     picked = render.pick_frames(len(motion["posed_joints"]), frames)
-    img = render.contact_sheet(motion, picked, view=view, cols=min(4, len(picked)))
+    prop = None if rifle_frame is None else render.rifle_mesh(motion, rifle_frame)
+    img = render.contact_sheet(motion, picked, view=view, cols=min(4, len(picked)), prop=prop)
     data = render.png_bytes(img)
     path = _take_dir(take_id) / f"sheet-{view}-{'-'.join(map(str, picked[:12]))}.png"
     path.write_bytes(data)
@@ -472,6 +518,15 @@ def add_layer(
     return result
 
 
+def _redo_indices(joints, names: list[str]) -> set[int]:
+    lower = set(lower_body(names))
+    if joints == "lower_body":
+        return lower
+    if joints == "above_hips":
+        return set(range(len(names))) - lower
+    return set(edit.joint_indices(joints, names))
+
+
 @tool
 def regenerate_range(
     take_id: str,
@@ -485,11 +540,12 @@ def regenerate_range(
     num_samples: Annotated[int, Field(ge=1, le=10)] = 1,
     blend_frames: Annotated[int, Field(ge=1, le=30, description="Frames blended at each inner edge of the range.")] = 6,
     keyframes_from: Annotated[list[Keyframes] | None, Field(description="Extra poses to lock inside the range.")] = None,
+    redo_joints: Annotated[str | list[str] | None, Field(description=f"Redo only these joints: above_hips, lower_body, a group ({', '.join(edit.GROUPS)}) or joint names. Every other joint and the root stay exactly as they were. Default: the whole body.")] = None,
 ) -> dict:
     """Redo only frames start..end of a take with Kimodo; every other frame stays exactly as it was.
 
     The surrounding frames are locked to guide the model, then the new section is spliced in and blended at its edges.
-    Each result is saved as a new take.
+    With redo_joints, hands, feet and hips that aren't being redone are also locked inside the range. Each result is saved as a new take.
     """
     motion = _load(take_id)
     T = len(motion["posed_joints"])
@@ -505,17 +561,26 @@ def regenerate_range(
     outside = [f for f in range(T) if f < start or f > end]
     dicts = [_keyframe_constraint(Keyframes(take_id=take_id, frames=outside))] if outside else []
     dicts += [_keyframe_constraint(kf) for kf in keyframes_from or []]
+    skeleton, src_local, src_root = edit.motion_parts(motion)
+    names = list(skeleton.bone_index)
+    redo = None if redo_joints is None else _redo_indices(redo_joints, names)
+    if redo is not None:
+        hold = [j for j in END_EFFECTORS if names.index(j) not in redo]
+        if hold:
+            dicts.append(_keyframe_constraint(Keyframes(take_id=take_id, frames=list(range(start, end + 1)), only=hold)))
     out, seconds = _run_model([prompt], [T], dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples)
 
-    skeleton, src_local, src_root = edit.motion_parts(motion)
     takes = []
     for i in range(out["posed_joints"].shape[0]):
         _, new_local, new_root = edit.motion_parts({k: np.asarray(v[i]) for k, v in out.items() if isinstance(v, np.ndarray)})
         local, root = edit.splice_range(src_local, src_root, new_local, new_root, start, end, blend_frames)
+        if redo is not None:
+            keep = [j for j in range(len(names)) if j not in redo]
+            local[:, keep], root = src_local[:, keep], src_root
         takes.append(_save_edit(take_id, edit.rebuild_motion(local, root, skeleton), "redo of", {
             "edit": "regenerate_range", "range": [start, end], "prompt": prompt, "seed": seed, "diffusion_steps": diffusion_steps,
             "text_weight": text_weight, "constraint_weight": constraint_weight, "blend_frames": blend_frames,
-            "keyframes_from": [kf.model_dump() for kf in keyframes_from or []]}))
+            "keyframes_from": [kf.model_dump() for kf in keyframes_from or []], "redo_joints": redo_joints}))
     _live(takes[0]["take_id"], f"Redid f{start}-{end}: {takes[0]['take_id']}", takes[0]["summary"], frames=[max(start - 5, 0), start, (start + end) // 2, end, min(end + 5, T - 1)])
     return {"generation_seconds": seconds, "takes": takes}
 
@@ -650,14 +715,16 @@ def set_joint_target(
     curve: Annotated[str | list[list[float]], Field(description="How strongly the target applies over time: spring, ease, hold, or [[frame, weight], ...].")] = "hold",
     attack_frames: Annotated[int, Field(ge=0, description="Frames to reach full strength.")] = 8,
     decay_frames: Annotated[int, Field(ge=0, description="Frames to let go before end.")] = 8,
+    follow: Annotated[str | None, Field(description="Keep this joint where it was relative to another joint at follow_frame, e.g. LeftHand follows RightHand to hold a two-handed rifle grip.")] = None,
+    follow_frame: Annotated[int | None, Field(description="Frame whose relative position to keep. Default: start.")] = None,
 ) -> dict:
     """Move or pin a hand or foot by bending its limb (two-bone IK) and save a new take; no model run.
 
-    Give one of offset, position or pin. The hand or foot keeps its world orientation. A target out of reach stops at
+    Give one of offset, position, pin or follow. The hand or foot keeps its world orientation. A target out of reach stops at
     full stretch; those frames are reported. Only that limb changes, so a rifle grip between two hands needs both moved.
     """
-    if sum([offset is not None, position is not None, bool(pin)]) != 1:
-        raise ValueError("Give exactly one of offset, position or pin")
+    if sum([offset is not None, position is not None, bool(pin), follow is not None]) != 1:
+        raise ValueError("Give exactly one of offset, position, pin or follow")
     motion = _load(take_id)
     skeleton, local, root = edit.motion_parts(motion)
     names = list(skeleton.bone_index)
@@ -671,13 +738,19 @@ def set_joint_target(
         targets = current + torch.tensor(offset, dtype=root.dtype)
     elif position is not None:
         targets = torch.tensor(position, dtype=root.dtype).expand(T, 3)
+    elif follow is not None:
+        f = start if follow_frame is None else follow_frame
+        pj, gr = (torch.as_tensor(np.asarray(motion[k])[:, names.index(follow)], dtype=root.dtype) for k in ("posed_joints", "global_rot_mats"))
+        offset_local = gr[f].T @ (current[f] - pj[f])
+        targets = pj + (gr @ offset_local[..., None])[..., 0]
     else:
         targets = current[start if pin_frame is None else pin_frame].expand(T, 3)
     weights = edit.curve_weights(T, curve, start, end, attack_frames, decay_frames)
     new_local, unreachable = edit.two_bone_ik(local, root, skeleton, joint, targets, weights)
     new = edit.rebuild_motion(new_local, root, skeleton)
     result = _save_edit(take_id, new, "ik on", {"edit": "set_joint_target", "joint": joint, "start": start, "end": end, "offset": offset, "position": position,
-                                                 "pin": pin, "pin_frame": pin_frame, "curve": curve, "attack_frames": attack_frames, "decay_frames": decay_frames})
+                                                 "pin": pin, "pin_frame": pin_frame, "curve": curve, "attack_frames": attack_frames, "decay_frames": decay_frames,
+                                                 "follow": follow, "follow_frame": follow_frame})
     result["unreachable_frames"] = unreachable[:20]
     result["joint_moved_max_m"] = round(float(np.linalg.norm(new["posed_joints"][:, names.index(joint)] - np.asarray(motion["posed_joints"])[:, names.index(joint)], axis=1).max()), 3)
     _live(result["take_id"], f"IK on {joint}: {result['take_id']}", result["summary"], play=True)
@@ -726,17 +799,286 @@ def trim_take(
     skeleton, local, root = edit.motion_parts(motion)
     new = edit.rebuild_motion(local[start : end + 1], root[start : end + 1], skeleton)
     result = _save_edit(take_id, new, "trim of", {"edit": "trim_take", "range": [start, end]})
-    d = TAKES / result["take_id"]
-    meta = json.loads((d / "meta.json").read_text())  # prompts must add up to the new length for the demo and analyze
-    secs = meta.get("durations") or [meta.get("duration")]
-    edges = np.cumsum([0] + [round(x * FPS) for x in secs])
-    kept = [(t, min(edges[i + 1], end + 1) - max(edges[i], start)) for i, t in enumerate(meta.get("texts") or [meta.get("text")])]
-    kept = [(t, int(n)) for t, n in kept if n > 0]
-    meta["texts"], meta["durations"] = [t for t, _ in kept], [n / FPS for _, n in kept]
-    meta.pop("text", None), meta.pop("duration", None)
-    (d / "meta.json").write_text(json.dumps(meta, indent=2))
+    spans = _prompt_spans(json.loads((_take_dir(take_id) / "meta.json").read_text()))
+    _write_prompts(result["take_id"], [(t, min(b, end + 1) - max(a, start)) for t, a, b in spans])
     _live(result["take_id"], f"Trimmed: {result['take_id']}", result["summary"], play=True)
     return result
+
+
+class SpeedRange(BaseModel):
+    start: int = Field(ge=0, description="First frame, in the source take.")
+    end: int = Field(description="Last frame, in the source take.")
+    speed: float = Field(gt=0.05, le=10, description="2 = twice as fast, 0.5 = half speed.")
+
+
+@tool
+def retime_motion(
+    take_id: str,
+    ranges: Annotated[list[SpeedRange], Field(min_length=1)],
+    ease_frames: Annotated[int, Field(ge=0, le=30, description="How gradually speed changes, in frames. 0 is abrupt, which can itself look like a jerk.")] = 4,
+) -> dict:
+    """Play frame ranges faster or slower and save a new take; no model run. Poses are unchanged; only timing moves.
+
+    A hit gets more impact from a fast strike followed by a slower collapse. The take's length changes:
+    frame_map says where source frames ended up.
+    """
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    for r in ranges:
+        if not 0 <= r.start <= r.end < T:
+            raise ValueError(f"Range {r.start}..{r.end} is outside the take's frames 0..{T - 1}")
+    skeleton, local, root = edit.motion_parts(motion)
+    spec = [r.model_dump() for r in ranges]
+    new_local, new_root, tau = edit.retime(local, root, spec, ease_frames)
+    result = _save_edit(take_id, edit.rebuild_motion(new_local, new_root, skeleton), "retime of", {"edit": "retime_motion", "ranges": spec, "ease_frames": ease_frames})
+    time_at = lambda f: int(round(tau[min(f, T - 1)]))
+    spans = _prompt_spans(json.loads((_take_dir(take_id) / "meta.json").read_text()))
+    _write_prompts(result["take_id"], [(t, time_at(b) - time_at(a) + (1 if b >= T else 0)) for t, a, b in spans])
+    result["frames_before_after"] = [T, len(new_local)]
+    result["frame_map"] = {str(f): time_at(f) for r in ranges for f in (r.start, r.end)}
+    _live(result["take_id"], f"Retimed: {result['take_id']}", result["summary"], play=True)
+    return result
+
+
+class FootWindow(BaseModel):
+    foot: str = Field(description="LeftFoot or RightFoot.")
+    start: int
+    end: int
+
+
+def _foot_slide(pj: np.ndarray, windows: dict[str, list[list[int]]], names: list[str]) -> float:
+    """Largest distance a foot travels within one of its windows, in metres."""
+    worst = 0.0
+    for foot, runs in windows.items():
+        p = pj[:, names.index(foot)]
+        for a, b in runs:
+            worst = max(worst, float(np.linalg.norm(p[a : b + 1] - p[a : b + 1].mean(0), axis=1).max()) * 2)
+    return round(worst, 3)
+
+
+@tool
+def plant_feet(
+    take_id: str,
+    windows: Annotated[list[FootWindow] | None, Field(description="Exact frames to hold each foot. Default: find them, wherever a foot is low and slow.")] = None,
+    min_frames: Annotated[int, Field(ge=2, description="Shortest contact to treat as planted, when finding them.")] = 6,
+    blend_frames: Annotated[int, Field(ge=1, le=15, description="Frames to ease in and out of each plant.")] = 4,
+) -> dict:
+    """Stop planted feet sliding: hold each foot still during its contacts by bending the leg, and save a new take. No model run.
+
+    Reports the contacts and the slide before and after. A foot is let go on frames the leg can't reach. Check the
+    result: a slow step can read as a contact, and on a fall a foot may need to drag.
+    """
+    motion = _load(take_id)
+    skeleton, local, root = edit.motion_parts(motion)
+    names = list(skeleton.bone_index)
+    pj = np.asarray(motion["posed_joints"])
+    if windows:
+        found: dict[str, list[list[int]]] = {}
+        for w in windows:
+            if w.foot not in ("LeftFoot", "RightFoot"):
+                raise ValueError("foot must be LeftFoot or RightFoot")
+            if not 0 <= w.start < w.end < len(pj):
+                raise ValueError(f"Window {w.start}..{w.end} is outside the take's frames 0..{len(pj) - 1}")
+            found.setdefault(w.foot, []).append([w.start, w.end])
+    else:
+        found = {f: edit.plant_windows(pj[:, names.index(f)], min_frames) for f in ("LeftFoot", "RightFoot")}
+    if not any(found.values()):
+        raise ValueError("No planted feet found: nothing to do. Pass windows to choose frames.")
+    new_local, missed = edit.plant_feet(local, root, skeleton, found, blend_frames)  # trims found to the frames it could hold
+    new = edit.rebuild_motion(new_local, root, skeleton)
+    spec = [{"foot": f, "start": a, "end": b} for f, runs in found.items() for a, b in runs]
+    result = _save_edit(take_id, new, "feet on", {"edit": "plant_feet", "windows": spec, "manual": bool(windows), "min_frames": min_frames, "blend_frames": blend_frames})
+    result |= {"contacts": found, "slide_before_m": _foot_slide(pj, found, names), "slide_after_m": _foot_slide(new["posed_joints"], found, names),
+               "unreachable_frames": {f: m[:20] for f, m in missed.items() if m}}
+    _live(result["take_id"], f"Feet planted: {result['take_id']}", f"Slide {result['slide_before_m']} -> {result['slide_after_m']} m", play=True)
+    return result
+
+
+@tool
+def join_takes(
+    take_ids: Annotated[list[str], Field(min_length=2, max_length=12, description="Takes in play order. Use trim_take first to cut them.")],
+    blend_frames: Annotated[int, Field(ge=1, le=60, description="Frames of cross-fade at each join; the result is shorter by this much per join.")] = 10,
+) -> dict:
+    """Join takes into one, turning and moving each to continue from the last, cross-faded. Saves a new take; no model run.
+
+    seam_pose_error_m is how far apart the poses are in the middle of each fade. Under about 0.1 m blends cleanly;
+    above that the fade can look like a slide, so redo the seam with regenerate_range.
+    """
+    parts = [edit.motion_parts(_load(t)) for t in take_ids]
+    if len({p[1].shape[1] for p in parts}) != 1:
+        raise ValueError("Takes use different skeletons")
+    skeleton = parts[0][0]
+    local, root, starts, errors = edit.join_clips([(p[1], p[2]) for p in parts], skeleton, blend_frames)
+    new = edit.rebuild_motion(local, root, skeleton)
+    result = _save_edit(take_ids[0], new, "join of", {"edit": "join_takes", "takes": take_ids, "blend_frames": blend_frames})
+    spans, ends = [], starts[1:] + [len(local)]
+    for t, first, end in zip(take_ids, starts, ends):
+        own = _prompt_spans(json.loads((_take_dir(t) / "meta.json").read_text()))
+        used = 0
+        for k, (text, a, b) in enumerate(own):
+            n = end - first - used if k == len(own) - 1 else b - a
+            n = max(min(n, end - first - used), 0)
+            spans.append((text, n))
+            used += n
+    _write_prompts(result["take_id"], spans)
+    result |= {"frames": len(local), "clip_starts": starts, "seam_pose_error_m": errors}
+    _live(result["take_id"], f"Joined: {result['take_id']}", result["summary"], play=True)
+    return result
+
+
+@tool
+def make_loop(
+    take_id: str,
+    start: Annotated[int | None, Field(description="First frame of the cycle. Default: find the frames that match best.")] = None,
+    end: Annotated[int | None, Field(description="Frame that should lead back into start.")] = None,
+    blend_frames: Annotated[int, Field(ge=1, le=60, description="Frames over which the end eases onto the start's pose.")] = 10,
+    in_place: Annotated[bool, Field(description="Remove the root's travel, for a treadmill-style loop.")] = False,
+    min_frames: Annotated[int, Field(ge=10, description="Shortest cycle, when finding frames.")] = 30,
+) -> dict:
+    """Make a seamless cycle, e.g. a walk or an idle, and save a new take; no model run. It plays last frame -> first frame.
+
+    Reports root_travel_per_loop_m (x, z) for root motion. Compare seam_step_m with typical_step_m: a seam well above
+    typical will show as a pop.
+    """
+    motion = _load(take_id)
+    pj = np.asarray(motion["posed_joints"])
+    T = len(pj)
+    if (start is None) != (end is None):
+        raise ValueError("Give both start and end, or neither")
+    found = None
+    if start is None:
+        if T <= min_frames + 1:
+            raise ValueError(f"The take has {T} frames: too short for a cycle of at least {min_frames}")
+        found = metrics.best_loop(pj, min_frames)
+        start, end = found["start"], found["end"]
+    if not 0 <= start < end < T or end - start < 3:
+        raise ValueError(f"Range {start}..{end} is outside the take's frames 0..{T - 1} or too short")
+    skeleton, local, root = edit.motion_parts(motion)
+    new_local, new_root, travel = edit.make_loop(local, root, start, end, blend_frames, in_place)
+    new = edit.rebuild_motion(new_local, new_root, skeleton)
+    result = _save_edit(take_id, new, "loop of", {"edit": "make_loop", "start": start, "end": end, "blend_frames": blend_frames, "in_place": in_place})
+    _write_prompts(result["take_id"], [(" ".join(t for t, _, _ in _prompt_spans(json.loads((_take_dir(take_id) / "meta.json").read_text()))), len(new_local))])
+    norm = metrics._normalized(np.asarray(new["posed_joints"], dtype=np.float64))
+    steps = np.linalg.norm(np.diff(norm, axis=0), axis=-1).mean(1)
+    result |= {"range": [start, end], "frames": len(new_local), "root_travel_per_loop_m": travel,
+               "seam_step_m": round(float(np.linalg.norm(norm[-1] - norm[0], axis=-1).mean()), 4), "typical_step_m": round(float(np.median(steps)), 4)}
+    if found:
+        result["mismatch_before_blend_m"] = found["mismatch_m"]
+    _live(result["take_id"], f"Loop: {result['take_id']}", f"Frames {start}-{end}", play=True)
+    return result
+
+
+@tool
+def check_rifle(
+    take_id: str,
+    reference_frame: Annotated[int, Field(ge=0, description="A frame with a good two-handed hold. It defines the rifle: fixed in the right hand, aimed through the left.")] = 0,
+    start: Annotated[int, Field(ge=0, description="First frame to check.")] = 0,
+    end: Annotated[int | None, Field(description="Last frame to check, e.g. before the character lets go. Default: the end of the take.")] = None,
+    max_gap_m: Annotated[float, Field(gt=0, description="How far the left hand can stray from its grip before a frame is flagged.")] = 0.05,
+    frames: Annotated[int | list[int], Field(description="Frames to draw.")] = 8,
+    view: str = "side",
+) -> list:
+    """Check a two-handed rifle hold and draw it: left hand gap from its grip, aim change, and muzzle height.
+
+    To fix a drifting left hand, use set_joint_target with joint=LeftHand, follow=RightHand. The rifle is a stand-in
+    placed from the wrist joints, so its place in the hands is approximate.
+    """
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    if not 0 <= reference_frame < T:
+        raise ValueError(f"reference_frame is outside the take's frames 0..{T - 1}")
+    report = metrics.rifle_check(motion, reference_frame, start, end, max_gap_m)
+    mesh = render.rifle_mesh(motion, reference_frame)
+    below = mesh[0][:, :, 1].min(1) < 0
+    below[:start] = False
+    if end is not None:
+        below[end + 1 :] = False
+    report["rifle_below_floor_frames"] = metrics._runs(below)
+    picked = render.pick_frames(T, frames)
+    img = render.contact_sheet(motion, picked, view=view, cols=min(4, len(picked)), prop=mesh)
+    return [Image(data=render.png_bytes(img), format="png"), json.dumps(report, indent=1)]
+
+
+def _blender() -> str:
+    for p in (os.environ.get("KIMODO_BLENDER"), shutil.which("blender"), "/Applications/Blender.app/Contents/MacOS/Blender"):
+        if p and Path(p).exists():
+            return p
+    raise ValueError("Blender not found. Install it or set KIMODO_BLENDER to its executable.")
+
+
+@tool
+def retarget_preview(
+    take_id: str,
+    rig_path: Annotated[str, Field(description="Your character: an .fbx, .glb or .gltf with an armature.")],
+    frames: Annotated[int | list[int], Field(description="Frames to render.")] = 8,
+    view: Annotated[str, Field(description="side, front, three-quarter or top.")] = "three-quarter",
+    export_format: Annotated[str, Field(description="File to write with the animation on your rig: fbx or glb.")] = "fbx",
+    joint_map: Annotated[dict[str, str] | None, Field(description="SOMA joint -> your bone name, for bones the automatic match misses, e.g. {\"LeftShin\": \"calf_L\"}.")] = None,
+) -> list:
+    """Retarget a take onto your own character in headless Blender, render it, and write an animated file. The rig file isn't changed.
+
+    Bone names are matched automatically for common styles (Mixamo, Unreal, Unity). Reports which bones were matched,
+    how far planted feet slide on the rig, and how far its mesh goes below the floor at the rendered frames. Fingers are left in the rest pose.
+    """
+    rig = Path(rig_path).expanduser()
+    if not rig.is_file() or rig.suffix.lower() not in (".fbx", ".glb", ".gltf"):
+        raise ValueError(f"No .fbx, .glb or .gltf file at {rig}")
+    if export_format not in ("fbx", "glb"):
+        raise ValueError("export_format must be fbx or glb")
+    if view not in render.VIEWS:
+        raise ValueError(f"view must be one of {sorted(render.VIEWS)}")
+    motion = _load(take_id)
+    from kimodo.skeleton.registry import build_skeleton
+
+    pj = np.asarray(motion["posed_joints"])
+    skel = build_skeleton(pj.shape[1])
+    names = list(skel.bone_index)
+    out = _take_dir(take_id) / "retarget"
+    out.mkdir(exist_ok=True)
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", rig.stem)
+    source = out / f"{stem}-source.npz"
+    np.savez(source, global_rot_mats=np.asarray(motion["global_rot_mats"]), posed_joints=pj, rest_joints=skel.neutral_joints.cpu().numpy())
+    picked = render.pick_frames(len(pj), frames)
+    job = {"rig": str(rig), "motion": str(source), "names": names, "joint_map": joint_map, "frames": picked, "out_dir": str(out), "stem": stem,
+           "format": export_format, "fps": FPS, "camera_dir": list(render.VIEWS[view][0])}
+    job_path = out / f"{stem}-job.json"
+    job_path.write_text(json.dumps(job))
+    run = subprocess.run([_blender(), "-b", "--factory-startup", "--python-exit-code", "3", "--python", str(Path(__file__).with_name("blender_retarget.py")), "--", str(job_path)],
+                         capture_output=True, text=True, timeout=600)
+    errors = re.findall(r"KIMODO_ERROR: .*", run.stdout)
+    if errors:
+        raise ValueError(errors[0].removeprefix("KIMODO_ERROR: "))
+    report_path = out / f"{stem}-report.json"
+    if run.returncode or not report_path.exists():
+        raise RuntimeError(f"Blender failed ({run.returncode}): {(run.stdout + run.stderr)[-1500:]}")
+    report = json.loads(report_path.read_text())
+    joints = np.load(out / f"{stem}-joints.npz")
+    slide = {}
+    for foot in ("LeftFoot", "RightFoot"):
+        runs = edit.plant_windows(pj[:, names.index(foot)])
+        slide[foot] = {"contacts": runs, "soma_scaled_m": round(_foot_slide(pj * report["scale_vs_soma"], {foot: runs}, names), 3),
+                       "rig_m": round(max((float(np.linalg.norm(joints[foot][a : b + 1] - joints[foot][a : b + 1].mean(0), axis=1).max()) * 2 for a, b in runs), default=0.0), 3)}
+    report["foot_slide"] = slide
+    paths = report.pop("images")
+    content = []
+    if paths:
+        from PIL import Image as PILImage
+
+        tiles = [PILImage.open(p).convert("RGB") for p in paths]
+        size, cols = tiles[0].width, min(4, len(tiles))
+        sheet = PILImage.new("RGB", (cols * size, (len(tiles) + cols - 1) // cols * size), "white")
+        for i, (tile, f) in enumerate(zip(tiles, picked)):
+            render.ImageDraw.Draw(tile).text((8, 6), f"f{f}", fill=render.INK, font=render._font(15))
+            sheet.paste(tile, (i % cols * size, i // cols * size))
+        data = render.png_bytes(sheet)
+        (out / f"{stem}-sheet.png").write_bytes(data)
+        content.append(Image(data=data, format="png"))
+        for p in paths:
+            Path(p).unlink()
+    else:
+        report["note"] = "The rig has no mesh, so nothing was rendered."
+    source.unlink()
+    return content + [json.dumps(report, indent=1)]
 
 
 def _recipe_chain(take_id: str) -> list[tuple[str, dict]]:
@@ -778,6 +1120,8 @@ def replay_recipe(
     chain = _recipe_chain(take_id)
     root_id, root = chain[0]
     info = root.get("mcp", {})
+    if info.get("imported_from_demo"):
+        raise ValueError(f"{root_id} came from the demo, whose generation settings weren't recorded, so it can't be replayed.")
     texts, secs = root.get("texts") or [root.get("text")], root.get("durations") or [root.get("duration")]
     cfg = root.get("cfg") or {}
     kf = [Keyframes(**k) for k in (info.get("keyframes_from") or [])]
@@ -801,7 +1145,7 @@ def replay_recipe(
         elif kind == "regenerate_range":
             r = regenerate_range(current, e["range"][0], e["range"][1], prompt=e.get("prompt"), seed=e.get("seed", 42), diffusion_steps=e.get("diffusion_steps", 100),
                                  text_weight=e.get("text_weight", 2.0), constraint_weight=e.get("constraint_weight", 2.0), blend_frames=e.get("blend_frames", 6),
-                                 keyframes_from=[Keyframes(**k) for k in e.get("keyframes_from") or []] or None)["takes"][0]
+                                 keyframes_from=[Keyframes(**k) for k in e.get("keyframes_from") or []] or None, redo_joints=e.get("redo_joints"))["takes"][0]
         elif kind == "smooth_motion":
             r = smooth_motion(current, e["range"][0], e["range"][1], e["sigma_frames"], e.get("joints"), e.get("blend_frames", 6))
         elif kind == "fix_ground":
@@ -809,7 +1153,15 @@ def replay_recipe(
         elif kind == "trim_take":
             r = trim_take(current, e["range"][1], e["range"][0])
         elif kind == "set_joint_target":
-            r = set_joint_target(current, e["joint"], e["start"], e["end"], e.get("offset"), e.get("position"), e.get("pin", False), e.get("pin_frame"), e.get("curve", "hold"), e.get("attack_frames", 8), e.get("decay_frames", 8))
+            r = set_joint_target(current, e["joint"], e["start"], e["end"], e.get("offset"), e.get("position"), e.get("pin", False), e.get("pin_frame"), e.get("curve", "hold"), e.get("attack_frames", 8), e.get("decay_frames", 8), e.get("follow"), e.get("follow_frame"))
+        elif kind == "retime_motion":
+            r = retime_motion(current, [SpeedRange(**x) for x in e["ranges"]], e.get("ease_frames", 4))
+        elif kind == "plant_feet":
+            r = plant_feet(current, [FootWindow(**w) for w in e["windows"]] if e.get("manual") else None, e.get("min_frames", 6), e.get("blend_frames", 4))
+        elif kind == "join_takes":
+            r = join_takes([current, *e["takes"][1:]], e.get("blend_frames", 10))
+        elif kind == "make_loop":
+            r = make_loop(current, e["start"], e["end"], e.get("blend_frames", 10), e.get("in_place", False))
         else:
             raise ValueError(f"Unknown edit '{kind}' in the recipe")
         current = r["take_id"]

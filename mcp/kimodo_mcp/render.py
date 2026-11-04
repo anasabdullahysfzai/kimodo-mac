@@ -16,6 +16,7 @@ BODY = np.array([154, 166, 232], dtype=np.float32)  # Kimodo viewer's periwinkle
 BG = (244, 245, 250)
 GRID = (214, 218, 232)
 INK = (40, 44, 70)
+PROP = np.array([58, 62, 72], dtype=np.float32)
 
 # Camera direction (origin -> camera) and the world "up" hint. The character starts facing +Z.
 VIEWS = {
@@ -63,15 +64,52 @@ def _font(size):
         return ImageFont.load_default()
 
 
-def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int = 300, cols: int = 4) -> Image.Image:
+def _box(lo, hi, base: int) -> tuple[list, list]:
+    """Vertices and outward-wound triangles of a box, in (forward, up, side) coordinates."""
+    verts = [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+    quads = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    return verts, [(base + q[i], base + q[j], base + q[k]) for q in quads for i, j, k in ((0, 1, 2), (0, 2, 3))]
+
+
+RIFLE_BOXES = [  # (forward, up, side) metres from the right hand
+    ((-0.10, -0.03, -0.025), (0.14, 0.04, 0.025)),  # receiver
+    ((0.14, -0.02, -0.02), (0.42, 0.025, 0.02)),  # handguard
+    ((0.42, -0.009, -0.009), (0.72, 0.009, 0.009)),  # barrel
+    ((-0.40, -0.07, -0.02), (-0.10, 0.02, 0.02)),  # stock
+    ((0.02, -0.22, -0.018), (0.10, -0.03, 0.018)),  # magazine
+    ((-0.08, -0.12, -0.018), (-0.03, -0.03, 0.018)),  # grip
+    ((0.00, 0.04, -0.015), (0.12, 0.08, 0.015)),  # sight
+]
+
+
+def rifle_mesh(motion: dict, reference_frame: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """A blocky rifle held as metrics.rifle_pose describes: ([T,V,3] vertices, [F,3] faces)."""
+    from .metrics import rifle_pose
+
+    verts, faces = [], []
+    for lo, hi in RIFLE_BOXES:
+        v, f = _box(lo, hi, len(verts))
+        verts += v
+        faces += f
+    pose = rifle_pose(motion, reference_frame)
+    return pose["origin"][:, None] + np.asarray(verts) @ pose["rot"].transpose(0, 2, 1), np.asarray(faces)
+
+
+def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int = 300, cols: int = 4, prop: tuple | None = None) -> Image.Image:
     """Render the given frames of one motion sample into a labelled grid.
 
     All tiles share one scale and ground level so heights compare across frames.
     Light horizontal guides mark every 0.5 m in level views (side, front). Tilted views
     (three-quarter, top) have no true height axis, so they get no guides and are centred on the root.
+    prop: extra ([T,V,3] vertices, [F,3] faces) drawn in a dark colour, e.g. from rifle_mesh.
     """
     pj, gr = motion["posed_joints"], motion["global_rot_mats"]
     verts, faces = skin_vertices(gr[frames], pj[frames])
+    base_colors = np.tile(BODY, (len(faces) + (len(prop[1]) if prop else 0), 1))
+    if prop:
+        base_colors[len(faces) :] = PROP
+        faces = np.concatenate([faces, prop[1] + verts.shape[1]])
+        verts = np.concatenate([verts, prop[0][frames].astype(verts.dtype)], axis=1)
     forward, right, up = _camera(view)
     light = -forward + np.array([-0.3, 0.8, 0.2])
     light /= np.linalg.norm(light)
@@ -122,7 +160,7 @@ def contact_sheet(motion: dict, frames: list[int], view: str = "side", tile: int
         visible = n @ forward < 0
         order = np.argsort(-depth[k][faces[visible]].mean(1))  # far to near
         shade = 0.4 + 0.6 * np.clip(n[visible] @ light, 0, 1)
-        colors = (BODY[None] * shade[:, None]).clip(0, 255).astype(np.uint8)
+        colors = (base_colors[visible] * shade[:, None]).clip(0, 255).astype(np.uint8)
         px = np.stack(to_px(u[k], v[k]), axis=-1)[faces[visible]]  # [Fv,3,2]
         for i in order:
             draw.polygon([tuple(p) for p in px[i]], fill=tuple(colors[i]))

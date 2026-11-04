@@ -4,6 +4,7 @@ Run with the Kimodo venv:  python mcp/check.py /path/to/kimodo
 Writes check_sheet.png next to this file so you can look at it.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -243,6 +244,106 @@ for bad in ("../evil", "a/b", "", ".hidden", "a b"):
         safe_name(bad)
         raise AssertionError(bad)
     except ValueError:
+        pass
+
+# edit.retime: speed 2 halves a range's length, ends stay put, and poses stay on the source's path
+rl, rr, tau = edit.retime(loc, rt, [{"start": 40, "end": 100, "speed": 2.0}], ease_frames=0)
+assert abs(len(rl) - (150 - 30)) <= 1 and torch.allclose(rr[0], rt[0]) and float((rr[-1] - rt[-1]).norm()) < 1e-3
+assert abs(tau[100] - tau[40] - 30) < 1 and abs(tau[39] - 39) < 1
+same_l, same_r, _ = edit.retime(loc, rt, [{"start": 40, "end": 100, "speed": 1.0}])
+assert len(same_l) == 150 and float((same_r - rt).abs().max()) < 1e-4
+eased = edit.retime(loc, rt, [{"start": 40, "end": 100, "speed": 3.0}], ease_frames=8)[1]
+abrupt = edit.retime(loc, rt, [{"start": 40, "end": 100, "speed": 3.0}], ease_frames=0)[1]
+accel = lambda r: float((r[2:] - 2 * r[1:-1] + r[:-2]).norm(dim=-1).max())
+assert accel(eased) < accel(abrupt)  # easing the speed change softens it
+
+# edit.plant_feet: a sliding foot is held still, frames outside its window and the other leg don't change
+still = loc77[:1].repeat(120, 1, 1, 1)
+slid = rt[:1].repeat(120, 1)
+slid[:, 0] += torch.clamp(torch.linspace(-0.2, 0.3, 120), 0.0, 0.1)  # the whole body drifts 10 cm while standing
+g2, p2, _ = sk77.fk(still, slid)
+fi = nm_77.index("LeftFoot")
+pf, missed = edit.plant_feet(still, slid, sk77, {"LeftFoot": [[60, 89]]}, 3)
+_, p3, _ = sk77.fk(pf, slid)
+assert not missed["LeftFoot"] and float((p3[60:90, fi] - p3[60:90, fi].mean(0)).norm(dim=-1).max()) < 5e-3
+assert float((p2[60:90, fi] - p2[60:90, fi].mean(0)).norm(dim=-1).max()) > 0.03  # it did slide before
+assert float((p3[:55] - p2[:55]).abs().max()) < 1e-4 and float((p3[:, nm_77.index("RightFoot")] - p2[:, nm_77.index("RightFoot")]).abs().max()) < 1e-4
+assert edit.plant_windows(np.c_[np.zeros(50), np.full(50, 0.1), np.zeros(50)]) == [[0, 49]]
+assert edit.plant_windows(np.c_[np.arange(50) * 1.0, np.full(50, 0.1), np.zeros(50)]) == []  # moving
+assert edit.plant_windows(np.c_[np.zeros(50), np.full(50, 0.5), np.zeros(50)]) == []  # in the air
+
+# edit.join_clips: the second clip continues from the first, whichever way it faced and wherever it started
+turned_l, turned_r = edit._turned(loc77, rt, 0, 1.2, torch.zeros(3), torch.tensor([3.0, 0.0, -2.0]))
+jl, jr, starts, errs = edit.join_clips([(loc77[:90], rt[:90]), (turned_l[80:], turned_r[80:])], sk77, 10)
+assert starts == [0, 80] and len(jl) == 150 and errs[0] < 0.02  # the same motion, so the join should recover it
+assert float((jr - rt).norm(dim=-1).max()) < 0.02
+assert float((jr[1:] - jr[:-1]).norm(dim=-1).max()) < 2 * float((rt[1:] - rt[:-1]).norm(dim=-1).max())  # no jump
+assert torch.equal(jl[:80], loc77[:80])
+
+# edit.make_loop: the last frame leads smoothly into the first; in_place removes the travel
+ml, mr, travel = edit.make_loop(loc77, rt, 30, 90, 10)
+assert len(ml) == 60 and abs(travel[1]) > 0.5
+_, mp0, _ = sk77.fk(ml, mr)
+closed = metrics._normalized(mp0.numpy().astype(np.float64))
+before = metrics._normalized(p0.numpy().astype(np.float64))
+assert np.linalg.norm(closed[-1] - closed[0], axis=-1).mean() < 0.5 * np.linalg.norm(before[89] - before[30], axis=-1).mean() + 0.05
+ml2, mr2, _ = edit.make_loop(loc77, rt, 30, 90, 10, in_place=True)
+assert float((mr2[-1, [0, 2]] - mr2[0, [0, 2]]).norm()) < 0.1 and float(mr[-1, 2] - mr[0, 2]) > 0.5
+bl = metrics.best_loop(np.tile(p0[:40].numpy(), (3, 1, 1)), 30)
+assert bl["mismatch_m"] < 0.15 and bl["end"] - bl["start"] >= 30
+
+# metrics.rifle_check: a left hand fixed relative to the right has no gap; the rifle drawn is rigid and in the hand
+held = {"posed_joints": p0.numpy(), "global_rot_mats": g0.numpy()}
+rc = metrics.rifle_check(held, 60)
+assert rc["left_hand_gap_max_m"] > 0.05 and rc["left_hand_off_frames"]  # this motion isn't holding anything
+rp = metrics.rifle_pose(held, 60)
+assert float(np.abs(rp["rot"] @ rp["rot"].transpose(0, 2, 1) - np.eye(3)).max()) < 1e-3
+assert np.linalg.norm(rp["grip"][60] - p0[60, nm_77.index("LeftHand")].numpy()) < 1e-5  # exact at the reference frame
+rv, rf = render.rifle_mesh(held, 60)
+assert rv.shape[1] == 8 * len(render.RIFLE_BOXES) and rf.shape == (12 * len(render.RIFLE_BOXES), 3)
+assert np.abs(np.linalg.norm(rv[10, 0] - rv[10, 1]) - np.linalg.norm(rv[80, 0] - rv[80, 1])) < 1e-4
+rifle_sheet = np.asarray(render.contact_sheet(held, [60], tile=300, cols=1, prop=(rv, rf))).astype(int)
+assert (np.abs(rifle_sheet - (render.PROP * 0.7).astype(int)).sum(-1) < 90).sum() > 50  # dark rifle pixels were drawn
+
+# blender_retarget.auto_map's naming rules, without Blender
+import ast  # noqa: E402
+
+src = (Path(__file__).parent / "kimodo_mcp/blender_retarget.py").read_text()
+names_only = {n.targets[0].id: ast.literal_eval(n.value) for n in ast.parse(src).body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("CENTRE", "LIMBS")}
+ns = {"re": __import__("re"), **names_only}
+for n in ast.parse(src).body:
+    if isinstance(n, ast.FunctionDef) and n.name in ("clean", "auto_map"):
+        exec(compile(ast.Module([n], []), "x", "exec"), ns)
+mix = ns["auto_map"]([f"mixamorig:{b}" for b in ("Hips", "Spine", "Spine1", "Spine2", "Neck", "Head", "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand", "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase")])
+assert mix["LeftLeg"].endswith("LeftUpLeg") and mix["LeftShin"].endswith(":LeftLeg") and mix["Spine1"].endswith(":Spine") and mix["Chest"].endswith("Spine2")
+ue = ns["auto_map"](["pelvis", "spine_01", "spine_02", "spine_03", "neck_01", "head", "clavicle_l", "upperarm_l", "lowerarm_l", "hand_l", "thigh_l", "calf_l", "foot_l", "ball_l"])
+assert ue["Hips"] == "pelvis" and ue["LeftArm"] == "upperarm_l" and ue["LeftForeArm"] == "lowerarm_l" and ue["LeftShin"] == "calf_l" and ue["LeftToeBase"] == "ball_l" and ue["Chest"] == "spine_03"
+soma = ns["auto_map"](["Hips", "LeftLeg", "LeftShin", "RightLeg", "RightShin"])
+assert soma["LeftLeg"] == "LeftLeg" and soma["LeftShin"] == "LeftShin"
+
+# demo panel: a motion from the view becomes a take, and is then recognised instead of being saved again
+import tempfile  # noqa: E402
+
+from kimodo_mcp import demo_live, server  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    server.TAKES = demo_live.TAKES = Path(tmp)
+    view = {"posed_joints": p0.numpy(), "global_rot_mats": g0.numpy(), "local_rot_mats": loc77.numpy()}
+    imported = server.import_motion(view, [("first", 100), ("second", 50)])
+    assert demo_live.take_names() == [imported] and demo_live.matching_take(p0.numpy(), [imported]) == imported
+    assert demo_live.matching_take(p0.numpy() + 0.01, [imported]) is None and demo_live.matching_take(p0.numpy()[:50], [imported]) is None
+    assert demo_live.matching_take(p0.numpy(), ["t999-missing"]) is None
+    meta = json.loads((Path(tmp) / imported / "meta.json").read_text())
+    assert meta["texts"] == ["first", "second"] and sum(meta["durations"]) * 30 == 150
+    saved = np.load(Path(tmp) / imported / "motion.npz")
+    assert np.abs(saved["posed_joints"] - p0.numpy()).max() < 1e-3
+    second = server.import_motion(view, [])
+    assert demo_live.take_names() == sorted([imported, second], reverse=True)
+    assert json.loads((Path(tmp) / second / "meta.json").read_text())["texts"] == ["Motion from the demo"]
+    try:
+        server.replay_recipe(imported)
+        raise AssertionError("an imported take has no recipe to replay")
+    except server.ToolError:
         pass
 
 print("check passed")

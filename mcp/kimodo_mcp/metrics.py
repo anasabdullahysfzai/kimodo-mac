@@ -282,20 +282,8 @@ def match_pose(motion: dict, reference: dict, reference_frame: int) -> dict:
     Compares body joints relative to the hips, with both poses turned to the same facing, so where the
     character stands and which way it faces don't count. Error is the mean joint distance in metres.
     """
-    def norm(pj):
-        names = _joint_names(pj.shape[1])
-        idx = {n: i for i, n in enumerate(names)}
-        keep = [i for i, n in enumerate(names) if not any(k in n for k in FINGERS)]
-        across = pj[:, idx["LeftLeg"]] - pj[:, idx["RightLeg"]]
-        angle = np.arctan2(across[:, 2], across[:, 0])
-        rel = pj - pj[:, idx["Hips"]][:, None]
-        c, s = np.cos(angle), np.sin(angle)
-        x, z = rel[..., 0], rel[..., 2]
-        out = np.stack([x * c[:, None] + z * s[:, None], rel[..., 1], -x * s[:, None] + z * c[:, None]], -1)
-        return out[:, keep]
-
-    a = norm(np.asarray(motion["posed_joints"], dtype=np.float64))
-    b = norm(np.asarray(reference["posed_joints"], dtype=np.float64)[[reference_frame]])
+    a = _normalized(np.asarray(motion["posed_joints"], dtype=np.float64))
+    b = _normalized(np.asarray(reference["posed_joints"], dtype=np.float64)[[reference_frame]])
     if a.shape[1] != b.shape[1]:
         raise ValueError("Takes use different skeletons")
     err = np.linalg.norm(a - b, axis=-1).mean(1)
@@ -325,3 +313,93 @@ def score(data: dict, criteria: list[dict]) -> dict:
             value = 0
         results.append({**c, "actual": value, "passed": value is not None and bool(ops[c["op"]](value, c["value"]))})
     return {"passed": sum(r["passed"] for r in results), "total": len(results), "results": results}
+
+
+def _normalized(pj: np.ndarray) -> np.ndarray:
+    """Body joints relative to the hips, turned to one facing: [T,J,3] -> [T,Jbody,3]."""
+    names = _joint_names(pj.shape[1])
+    idx = {n: i for i, n in enumerate(names)}
+    keep = [i for i, n in enumerate(names) if not any(k in n for k in FINGERS)]
+    across = pj[:, idx["LeftLeg"]] - pj[:, idx["RightLeg"]]
+    angle = np.arctan2(across[:, 2], across[:, 0])
+    rel = pj - pj[:, idx["Hips"]][:, None]
+    c, s = np.cos(angle)[:, None], np.sin(angle)[:, None]
+    x, z = rel[..., 0], rel[..., 2]
+    return np.stack([x * c + z * s, rel[..., 1], -x * s + z * c], -1)[:, keep]
+
+
+def pose_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean joint distance in metres between two [J,3] poses, ignoring position and facing."""
+    return float(np.linalg.norm(_normalized(a[None])[0] - _normalized(b[None])[0], axis=-1).mean())
+
+
+def best_loop(pj: np.ndarray, min_frames: int) -> dict:
+    """The pair of frames at least min_frames apart that match best for how much happens between them.
+
+    Dividing by the movement in between stops standing still, which always matches itself, from winning.
+    """
+    pj = np.asarray(pj, dtype=np.float64)
+    p = _normalized(pj)
+    v = np.gradient(p, axis=0) * 5  # weigh movement as the distance covered in 5 frames: same pose, opposite stride differs
+    step = np.linalg.norm(np.diff(p, axis=0), axis=-1).mean(1) + np.linalg.norm(np.diff(pj[:, 0, [0, 2]], axis=0), axis=-1)
+    moved = np.r_[0.0, np.cumsum(step)]
+    T = len(p)
+    best = (np.inf, 0, T - 1, 0.0)
+    for a in range(T - min_frames):
+        err = np.linalg.norm(p[a + min_frames :] - p[a], axis=-1).mean(1) + np.linalg.norm(v[a + min_frames :] - v[a], axis=-1).mean(1)
+        ratio = err / (moved[a + min_frames :] - moved[a] + 1e-3)
+        i = int(ratio.argmin())
+        if ratio[i] < best[0]:
+            best = (float(ratio[i]), a, a + min_frames + i, float(err[i]))
+    return {"start": best[1], "end": best[2], "mismatch_m": round(best[3], 3)}
+
+
+RIFLE_MUZZLE_M = 0.72
+
+
+def rifle_pose(motion: dict, reference_frame: int = 0) -> dict:
+    """A rigid rifle in the right hand, aimed from the right hand through the left hand at reference_frame.
+
+    Returns origin [T,3], rot [T,3,3] (columns forward, up, side), and where the left hand should be, grip [T,3].
+    The frames follow the wrist joints, so the rifle's place in the hands is approximate.
+    """
+    pj, gr = np.asarray(motion["posed_joints"], dtype=np.float64), np.asarray(motion["global_rot_mats"], dtype=np.float64)
+    names = _joint_names(pj.shape[1])
+    rh, lh = names.index("RightHand"), names.index("LeftHand")
+    f = reference_frame
+    fwd = pj[f, lh] - pj[f, rh]
+    fwd = fwd / (np.linalg.norm(fwd) + 1e-9)
+    world_up = np.array([0.0, 1.0, 0.0]) if abs(fwd[1]) < 0.95 else np.array([1.0, 0.0, 0.0])
+    up = world_up - fwd * (world_up @ fwd)
+    up /= np.linalg.norm(up)
+    held = gr[f, rh].T @ np.stack([fwd, up, np.cross(fwd, up)], axis=1)  # rifle axes in the right hand's frame
+    rot = gr[:, rh] @ held
+    grip_local = rot[f].T @ (pj[f, lh] - pj[f, rh])
+    return {"origin": pj[:, rh], "rot": rot, "grip": pj[:, rh] + (rot @ grip_local[..., None])[..., 0]}
+
+
+def rifle_check(motion: dict, reference_frame: int = 0, start: int = 0, end: int | None = None, max_gap_m: float = 0.05) -> dict:
+    """How well a two-handed rifle hold survives a frame range: left hand gap from its grip, aim, and muzzle height."""
+    pj = np.asarray(motion["posed_joints"], dtype=np.float64)
+    names = _joint_names(pj.shape[1])
+    end = len(pj) - 1 if end is None else min(end, len(pj) - 1)
+    r = rifle_pose(motion, reference_frame)
+    gap = np.linalg.norm(pj[:, names.index("LeftHand")] - r["grip"], axis=1)
+    fwd = r["rot"][:, :, 0]
+    muzzle_y = (r["origin"] + fwd * RIFLE_MUZZLE_M)[:, 1]
+    pitch = np.degrees(np.arcsin(np.clip(fwd[:, 1], -1, 1)))
+    heading = np.degrees(np.arctan2(fwd[:, 0], fwd[:, 2]))
+    hands_apart = float(np.linalg.norm(pj[reference_frame, names.index("LeftHand")] - pj[reference_frame, names.index("RightHand")]))
+    aim = np.degrees(np.arccos(np.clip(fwd @ fwd[reference_frame], -1, 1)))
+    frames = np.arange(len(pj))
+    inside = (frames >= start) & (frames <= end)
+    out = {
+        "reference_frame": reference_frame, "range": [start, end], "hands_apart_at_reference_m": round(hands_apart, 3),
+        "left_hand_gap_max_m": round(float(gap[inside].max()), 3), "left_hand_gap_mean_m": round(float(gap[inside].mean()), 3),
+        "left_hand_off_frames": [[a, b] for a, b in _runs(inside & (gap > max_gap_m))],
+        "aim_change_max_deg": round(float(aim[inside].max()), 1), "pitch_deg_range": [round(float(pitch[inside].min()), 1), round(float(pitch[inside].max()), 1)],
+        "heading_deg_at_reference": round(float(heading[reference_frame]), 1), "muzzle_lowest_m": round(float(muzzle_y[inside].min()), 3),
+    }
+    if not 0.15 <= hands_apart <= 0.8:
+        out["warning"] = f"The hands are {hands_apart:.2f} m apart at frame {reference_frame}, which doesn't look like a two-handed hold; choose another reference_frame."
+    return out

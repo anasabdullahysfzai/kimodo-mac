@@ -186,6 +186,12 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 | `smooth_motion` | Softens jerks in a frame range, on the whole body or chosen joints, with no model run. |
 | `fix_ground` | Raises the body smoothly wherever its mesh goes through the floor. |
 | `trim_take` | Cuts a take to a frame range, e.g. to remove an idle tail. |
+| `retime_motion` | Plays frame ranges faster or slower, with eased speed changes and no model run. |
+| `plant_feet` | Holds feet still during their contacts by bending the legs, to stop sliding. |
+| `join_takes` | Joins takes end to start, turning and moving each to continue from the last, with a cross-fade. |
+| `make_loop` | Makes a seamless cycle from chosen frames or the best match it can find, with optional in-place root. |
+| `check_rifle` | Draws a rifle fixed in the right hand and measures left hand gap, aim change, and floor contact. |
+| `retarget_preview` | Puts a take on your own FBX or glTF character in headless Blender, renders it, and writes an animated file. |
 | `save_animation`, `list_saved_animations` | Save an approved take under a clear name, with a BVH and a video, and list what's saved. |
 | `open_in_demo` | Loads a saved animation or a take in your open demo tabs. |
 | `list_takes` | Lists saved takes with prompts, settings, what each was edited from, and a one-line summary. |
@@ -249,11 +255,54 @@ Final kneeling deaths, using all of these on the takes above (shared t093 aim): 
 
 **Avoiding a jerky hit.** Two things caused the jerk in t151 and t152, and smoothing fixed neither alone: a pose locked at two frames makes the body arrive, freeze and start again, and a large backward throw followed by a forward fall reads as "goes back, then comes back". Locking the arch at one frame with `regenerate_range` and its `keyframes_from` removed the freeze on the back death (hand acceleration 53 to 21 m/s^2, no dead stop, head reach unchanged). The front death instead uses a smaller recoil as a layer on a collapse that only moves forward: head 17 cm back instead of 41, hand peak 1.2 m/s instead of 6.1, then `smooth_motion` (sigma 1.5) to round the curve's corners.
 
+### Editing in the demo
+
+With `mcp/kimodo.patch` applied, the demo has two more panels. They call the same code as the MCP tools, so edits made here and by Claude end up in the same list of takes.
+
+**Takes** lists every generation and edit, newest first. Open an earlier one to undo an edit.
+
+**Edit Motion** works on the motion in the view. A motion that isn't a take yet, such as one you just generated or an example, is saved as a new take first. If several samples are showing, it uses the first. Each edit saves a new take and loads it, and the source isn't changed. Set **Start Frame** and **End Frame**, by typing or from the playhead, then use:
+
+| Control | MCP tool | Uses the frame range |
+|---|---|---|
+| **Trim To Frames** | `trim_take` | Yes |
+| **Smooth Frames** | `smooth_motion` | Yes |
+| **Retime Frames** | `retime_motion` | Yes |
+| **Redo Frames** (optional prompt, seed, **Upper Body Only**) | `regenerate_range` | Yes |
+| **Plant Feet** | `plant_feet` | No, the whole motion |
+| **Fix Ground** | `fix_ground` | No, the whole motion |
+
+Redo Frames runs the model, so it takes about a minute on CPU and waits for any generation in progress. The rest finish in a second or two. Only the SOMA skeleton is supported. A take made from a demo motion can be edited, but `replay_recipe` refuses it, because the settings that generated it weren't recorded.
+
+### Timing, feet, joins, loops, partial locks
+
+These all save a new take and leave the source alone. Only partial locks run the model.
+
+**`retime_motion`** changes timing, not poses. A sudden speed change is itself a jerk, so changes are eased over `ease_frames`. `frame_map` says where source frames ended up.
+
+**`plant_feet`** finds contacts where a foot is low and slow, or takes exact `windows`. A foot is let go on frames the leg can't reach, so the knee doesn't snap straight. Tested: a walk went from 31 cm of slide to 1.3 cm, and a kneeling fall from 32 cm to 0.4 cm. On a fall, a foot may need to drag, so check the result.
+
+**`join_takes`** reports `seam_pose_error_m`, the pose mismatch in the middle of each fade. Tested by cutting one clip in two, turning and moving the second part, and joining them: the result matched the original within 2 cm.
+
+**`make_loop`** searches for matching frames, weighed by how much happens between them, because standing still always matches itself. Tested on a walk: frames 9-62, a seam step of 0.9 cm against a typical 0.85 cm, and 0.98 m of root travel per loop.
+
+**Partial locks:** `keyframes_from` takes `only` (any of `LeftHand`, `RightHand`, `LeftFoot`, `RightFoot`, `Hips`), and `regenerate_range` takes `redo_joints` (`above_hips`, `lower_body`, a group, or joint names). Kimodo's hand and foot constraints also hold the hips' position and heading, so the root can't wander on locked frames. Tested: redoing the upper body of a walk left the hips and legs at 0.0 m change, with hands moving up to 45 cm. Foot locks landed within about 5 cm.
+
+**`set_joint_target`** also takes `follow`, which keeps a joint where it was relative to another, e.g. the left hand on a rifle held by the right.
+
+### Checking on a rifle and on your own rig
+
+**`check_rifle`** and `render_motion`'s `rifle_frame` use a stand-in rifle fixed in the right hand, aimed through the left hand at a reference frame you choose. It's placed from wrist joints, so its place in the hands is approximate, and it isn't exported. It stays in the hand, so frames after the character would let go show it going through the floor; limit the check with `end`.
+
+**`retarget_preview`** needs Blender (set `KIMODO_BLENDER` if it isn't in `/Applications` or on your `PATH`). It matches common bone names (Mixamo, Unreal, Unity); pass `joint_map` for others. It corrects each bone's rest direction, so T-pose and A-pose rigs both work, and scales root motion by hip height. It doesn't change your rig file. Fingers stay in the rest pose, and nothing fixes contacts for different proportions, so look at the reported foot slide and floor numbers.
+
+Tested on a Mixamo character: the exported FBX reimported with bones exactly on the computed positions, and a copy with arms lowered 45 degrees, Unreal bone names and a 90 degree turn gave the same bone directions (0.0 degree difference). It hasn't been tested inside a game engine.
+
 ### Saving and reopening animations
 
 `save_animation` copies a take to `~/kimodo-local/approved-animations/<name>/` (`motion.npz`, `meta.json`, a BVH, a video, and the source take's name). It won't replace an existing name unless you pass `overwrite`. The copy doesn't change when you edit takes later; to rework an animation, edit its source take and save again.
 
-With `mcp/kimodo.patch` applied, the demo has a **Saved Animations** panel: pick a name and click **Open Animation**. New saves appear in the list by themselves. `open_in_demo` does the same from Claude. Set `KIMODO_SAVED` to use another folder, for both the demo and the MCP server.
+With `mcp/kimodo.patch` applied, the demo has a **Saved Animations** panel: pick a name and click **Open Animation**, or type a name and click **Save Animation** to save the motion in the view. New saves appear in the list by themselves. `open_in_demo` does the same from Claude. Set `KIMODO_SAVED` to use another folder, for both the demo and the MCP server.
 
 ### Seeing and checking motion
 
@@ -367,7 +416,6 @@ Each is two prompt segments: "A soldier kneels on one knee, aiming a rifle at ey
 ### Limits
 
 - Post-processing is off (it needs the x86-only extension).
-- Moving one joint to a target ("raise the foot 20 cm") isn't supported; it would need inverse kinematics. Lock poses with `keyframes_from` and re-roll instead.
 - Renders are flat-shaded and only for SOMA-skeleton models.
 
 ## Not done / possible next steps
