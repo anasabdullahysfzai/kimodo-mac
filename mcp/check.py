@@ -156,4 +156,10 @@ step = (sp[1:] - sp[:-1]).norm(dim=-1).amax(1)
 _, op, _ = sk.fk(other, other_root)
 _, sj, _ = sk.fk(edit.splice_range(loc, rt, other, other_root, 60, 100, 1)[0], edit.splice_range(loc, rt, other, other_root, 60, 100, 1)[1])
 assert float(step[58:68].max()) < float((sj[1:] - sj[:-1]).norm(dim=-1).amax(1)[58:68].max())  # blending beats a 1-frame cut
+# edit.py: ground_lift covers every frame that needs it, never pops, and stays out of frames far from the sink
+low = np.zeros(100); low[40:50] = -0.1
+g = edit.ground_lift(low, smooth_frames=8)
+assert (g[40:50] >= 0.1 - 1e-9).all() and g[:20].max() == 0 and g[70:].max() == 0
+assert np.abs(np.diff(g)).max() < 0.1 / 8  # a gradual ease, not a jump
+assert edit.ground_lift(low, start=60).max() == 0  # nothing to fix after frame 60
 print("check passed")

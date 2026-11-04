@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
+import torch
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
@@ -475,6 +476,61 @@ def regenerate_range(
             "text_weight": text_weight, "constraint_weight": constraint_weight, "blend_frames": blend_frames}))
     _live(takes[0]["take_id"], f"Redid f{start}-{end}: {takes[0]['take_id']}", takes[0]["summary"], frames=[max(start - 5, 0), start, (start + end) // 2, end, min(end + 5, T - 1)])
     return {"generation_seconds": seconds, "takes": takes}
+
+
+@tool
+def fix_ground(
+    take_id: str,
+    start: Annotated[int, Field(ge=0, description="First frame to correct.")] = 0,
+    end: Annotated[int | None, Field(description="Last frame to correct. Default: the end of the take.")] = None,
+    smooth_frames: Annotated[int, Field(ge=1, le=30, description="How gradually the lift eases in and out.")] = 8,
+) -> dict:
+    """Raise the whole body smoothly wherever its mesh goes through the floor, and save a new take.
+
+    Lifts everything, so a planted foot can rise with a sunken knee; limit start..end to avoid that (see max_foot_lift_m).
+    Reports the floor sink before and after.
+    """
+    motion = _load(take_id)
+    skeleton, local, root = edit.motion_parts(motion)
+    verts, _ = render.skin_vertices(motion["global_rot_mats"], motion["posed_joints"])
+    low = verts[:, :, 1].min(1)
+    lift = edit.ground_lift(low, start, end, smooth_frames)
+    new_root = root.clone()
+    new_root[:, 1] += torch.as_tensor(lift, dtype=root.dtype)
+    new = edit.rebuild_motion(local, new_root, skeleton)
+    after = render.skin_vertices(new["global_rot_mats"], new["posed_joints"])[0][:, :, 1].min(1)
+    result = _save_edit(take_id, new, "ground on", {"edit": "fix_ground", "range": [start, end], "smooth_frames": smooth_frames})
+    result |= {"sink_before_m": round(float(max(-low.min(), 0)), 3), "sink_after_m": round(float(max(-after[start:end].min(), 0)), 3),
+               "max_lift_m": round(float(lift.max()), 3), "max_foot_lift_m": round(edit.foot_drift(np.asarray(motion["posed_joints"]), new["posed_joints"], list(skeleton.bone_index)), 3)}
+    _live(result["take_id"], f"Ground fixed: {result['take_id']}", f"Sink {result['sink_before_m']} -> {result['sink_after_m']} m", play=True)
+    return result
+
+
+@tool
+def trim_take(
+    take_id: str,
+    end: Annotated[int, Field(ge=1, description="Last frame to keep.")],
+    start: Annotated[int, Field(ge=0, description="First frame to keep.")] = 0,
+) -> dict:
+    """Cut a take to frames start..end and save a new take, e.g. to remove an idle tail. Nothing is regenerated."""
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    if not 0 <= start < end < T:
+        raise ValueError(f"Range {start}..{end} is outside the take's frames 0..{T - 1}")
+    skeleton, local, root = edit.motion_parts(motion)
+    new = edit.rebuild_motion(local[start : end + 1], root[start : end + 1], skeleton)
+    result = _save_edit(take_id, new, "trim of", {"edit": "trim_take", "range": [start, end]})
+    d = TAKES / result["take_id"]
+    meta = json.loads((d / "meta.json").read_text())  # prompts must add up to the new length for the demo and analyze
+    secs = meta.get("durations") or [meta.get("duration")]
+    edges = np.cumsum([0] + [round(x * FPS) for x in secs])
+    kept = [(t, min(edges[i + 1], end + 1) - max(edges[i], start)) for i, t in enumerate(meta.get("texts") or [meta.get("text")])]
+    kept = [(t, int(n)) for t, n in kept if n > 0]
+    meta["texts"], meta["durations"] = [t for t, _ in kept], [n / FPS for _, n in kept]
+    meta.pop("text", None), meta.pop("duration", None)
+    (d / "meta.json").write_text(json.dumps(meta, indent=2))
+    _live(result["take_id"], f"Trimmed: {result['take_id']}", result["summary"], play=True)
+    return result
 
 
 @tool

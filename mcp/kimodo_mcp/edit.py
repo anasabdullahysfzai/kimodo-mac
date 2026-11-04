@@ -157,6 +157,23 @@ def splice_range(src_local, src_root, new_local, new_root, start: int, end: int,
     return local, root
 
 
+def ground_lift(lowest: np.ndarray, start: int = 0, end: int | None = None, smooth_frames: int = 8) -> np.ndarray:
+    """Upward root offset per frame that keeps the body out of the floor, without sudden pops.
+
+    lowest: the lowest mesh height per frame. Taking the running maximum before smoothing makes the
+    smoothed lift cover every frame that needs it. Frames outside start..end get no lift of their own,
+    but the lift eases in and out around them.
+    """
+    need = np.clip(-np.asarray(lowest, dtype=np.float64), 0.0, None)
+    need[:start] = 0.0
+    if end is not None:
+        need[end + 1 :] = 0.0
+    w = max(int(smooth_frames), 1)
+    n = len(need)
+    held = np.array([need[max(i - w, 0) : i + w + 1].max() for i in range(n)])
+    return np.array([held[max(i - w, 0) : i + w + 1].mean() for i in range(n)])
+
+
 def motion_parts(motion: dict):
     """(skeleton, local rotations, root positions) from a saved motion dict; local rotations derived if absent."""
     from kimodo.skeleton.registry import build_skeleton

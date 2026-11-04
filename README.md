@@ -176,6 +176,8 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `add_layer` | Adds curve-driven rotations to chosen joints of a finished take, with no model run. Works for any motion, and has `impact_front`, `impact_back`, `impact_left` and `impact_right` presets with a `strength` multiplier. |
 | `regenerate_range` | Redoes only a frame range with Kimodo, optionally with a new prompt. Every other frame stays exactly as it was. |
+| `fix_ground` | Raises the body smoothly wherever its mesh goes through the floor. |
+| `trim_take` | Cuts a take to a frame range, e.g. to remove an idle tail. |
 | `list_takes` | Lists saved takes with prompts, settings, what each was edited from, and a one-line summary. |
 
 Each take is saved to `~/kimodo-local/motions/<take id>/` as `motion.npz`, `meta.json` and (if used) `constraints.json`, the same layout as the demo's example folders.
@@ -230,6 +232,10 @@ Tested, each in under 2 seconds with zero foot drift:
 **`regenerate_range`** locks all frames outside the range to guide the model, then splices the new frames in and blends `blend_frames` (default 6) at each inner edge. Outside frames are copied, so they match exactly. It generates the whole clip internally, so it takes as long as a full generation: 93 s for 3 samples of 5.5 s.
 
 Tested on t116 f58-80, where the soldier wrongly re-aimed after the hit, with "A kneeling person goes limp, arms dropping to the sides, and slumps forward toward the ground.": frames outside the range matched exactly in 3 of 3 takes, and in the best (t132) the hands fell to 0.25 m instead of rising to 0.65 m. Seam jolts were 17-31 m/s^2, against the take's existing 60. The new section has to meet the old motion at its edge, so if the hands drift back near the end of the range, widen the range.
+
+**`fix_ground`** finds the lowest mesh point per frame and lifts the whole body with a smooth ease in and out. Set `start` to skip planted poses, because the lift also raises the feet. **`trim_take`** keeps a frame range and updates the prompt timings.
+
+Final kneeling deaths, using all of these on the takes above (shared t093 aim, 5 s each): front t151, back t152, headshot t153. Floor sink after the aim is 0 (was up to 15 cm), the back death no longer slams down or raises its hands, and the headshot snaps the head alone. Up to 3.5 cm of knee sink remains in the kneel, left alone to keep the planted foot down.
 
 The demo's timeline shows prompts shorter than 2 s as 2 s, so its labels can run slightly long. The motion file isn't affected.
 
