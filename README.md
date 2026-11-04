@@ -271,6 +271,9 @@ With `mcp/kimodo.patch` applied, the demo has two more panels. They call the sam
 | **Redo Frames** (optional prompt, seed, **Upper Body Only**) | `regenerate_range` | Yes |
 | **Plant Feet** | `plant_feet` | No, the whole motion |
 | **Fix Ground** | `fix_ground` | No, the whole motion |
+| **Export FBX** (with **Character File**) | `retarget_preview` | No, the whole motion |
+
+Export FBX needs Blender and the full path to your character. It downloads the animated FBX and keeps a copy in the take's `retarget` folder, with a preview sheet. Your character file isn't changed. The box empties when you reload the page.
 
 Redo Frames runs the model, so it takes about a minute on CPU and waits for any generation in progress. The rest finish in a second or two. Only the SOMA skeleton is supported. A take made from a demo motion can be edited, but `replay_recipe` refuses it, because the settings that generated it weren't recorded.
 

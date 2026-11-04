@@ -117,6 +117,8 @@ def add_saved_panel(demo, client) -> None:
         upper = client.gui.add_checkbox("Upper Body Only", initial_value=False, hint="Keep the hips and legs exactly as they are.")
         seed = client.gui.add_number("Redo Seed", initial_value=42, step=1)
         redo = client.gui.add_button("Redo Frames", hint="Run the model on these frames only; every other frame stays exactly as it is.")
+        rig_path = client.gui.add_text("Character File", initial_value="", hint="Full path to your .fbx, .glb or .gltf character. Needs Blender. The file isn't changed.")
+        export_fbx = client.gui.add_button("Export FBX", hint="Put the motion in the view on your character, and download it as an animated FBX.")
 
     def last_frame(session) -> int:
         """The motion's own last frame. The timeline can be longer, since it shows short prompts as 2 s."""
@@ -199,7 +201,18 @@ def add_saved_panel(demo, client) -> None:
         server.save_animation(take, name, overwrite=bool(save_replace.value))
         client.add_notification(title="Animation saved", body=name, auto_close_seconds=5.0, color="green")
 
-    for control, label, run in ((trim, "Trim", run_trim), (smooth, "Smooth", run_smooth), (retime, "Retime", run_retime), (feet, "Plant Feet", run_feet),
+    def run_export(take, session):
+        from . import server
+
+        rig = rig_path.value.strip().strip("'\"")
+        if not rig:
+            raise ValueError("Enter the path to your character file first.")
+        report = json.loads(server.retarget_preview(take, rig, export_format="fbx")[-1])
+        exported = Path(report["exported"])
+        client.send_file_download(f"{take}-{exported.name}", exported.read_bytes(), save_immediately=True)
+        client.add_notification(title="FBX exported", body=f"Saved to {exported}", auto_close_seconds=15.0, color="green")
+
+    for control, label, run in ((export_fbx, "Export FBX", run_export), (trim, "Trim", run_trim), (smooth, "Smooth", run_smooth), (retime, "Retime", run_retime), (feet, "Plant Feet", run_feet),
                                 (ground, "Fix Ground", run_ground), (redo, "Redo Frames", run_redo), (save_button, "Save Animation", run_save)):
         action(control, label, run)
 
