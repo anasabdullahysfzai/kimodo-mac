@@ -334,15 +334,15 @@ def _save_edit(parent_id: str, motion: dict, label: str, edit: dict) -> dict:
     return {"take_id": take_id, "parent": parent_id, "summary": metrics.one_line(m), "path": str(d)}
 
 
-def import_motion(motion: dict, prompts: list[tuple[str, int]]) -> str:
-    """Save a motion from the demo's view as a new take, so it can be edited. prompts: (text, frames)."""
+def import_motion(motion: dict, prompts: list[tuple[str, int]], source: dict | None = None) -> str:
+    """Save a motion from outside the model as a new take, so it can be edited. prompts: (text, frames)."""
     skeleton, local, root = edit.motion_parts(motion)
     new = edit.rebuild_motion(local, root, skeleton)
     take_id = _new_id(prompts[0][0] if prompts else "demo motion")
     d = TAKES / take_id
     d.mkdir()
     np.savez(d / "motion.npz", **new)
-    meta = {"num_samples": 1, "mcp": {"imported_from_demo": True, "summary": metrics.one_line(metrics.analyze(new))}}
+    meta = {"num_samples": 1, "mcp": {**(source or {"imported_from_demo": True}), "summary": metrics.one_line(metrics.analyze(new))}}
     (d / "meta.json").write_text(json.dumps(meta, indent=2))
     _write_prompts(take_id, prompts or [("Motion from the demo", len(local))])
     return take_id
@@ -898,6 +898,7 @@ def plant_feet(
 def join_takes(
     take_ids: Annotated[list[str], Field(min_length=2, max_length=12, description="Takes in play order. Use trim_take first to cut them.")],
     blend_frames: Annotated[int, Field(ge=1, le=60, description="Frames of cross-fade at each join; the result is shorter by this much per join.")] = 10,
+    keep_facing: Annotated[bool, Field(description="Only move each take, don't turn it. Use when they already face the same way.")] = False,
 ) -> dict:
     """Join takes into one, turning and moving each to continue from the last, cross-faded. Saves a new take; no model run.
 
@@ -908,9 +909,9 @@ def join_takes(
     if len({p[1].shape[1] for p in parts}) != 1:
         raise ValueError("Takes use different skeletons")
     skeleton = parts[0][0]
-    local, root, starts, errors = edit.join_clips([(p[1], p[2]) for p in parts], skeleton, blend_frames)
+    local, root, starts, errors = edit.join_clips([(p[1], p[2]) for p in parts], skeleton, blend_frames, keep_facing)
     new = edit.rebuild_motion(local, root, skeleton)
-    result = _save_edit(take_ids[0], new, "join of", {"edit": "join_takes", "takes": take_ids, "blend_frames": blend_frames})
+    result = _save_edit(take_ids[0], new, "join of", {"edit": "join_takes", "takes": take_ids, "blend_frames": blend_frames, "keep_facing": keep_facing})
     spans, ends = [], starts[1:] + [len(local)]
     for t, first, end in zip(take_ids, starts, ends):
         own = _prompt_spans(json.loads((_take_dir(t) / "meta.json").read_text()))
@@ -1006,6 +1007,70 @@ def _blender() -> str:
     raise ValueError("Blender not found. Install it or set KIMODO_BLENDER to its executable.")
 
 
+def _run_blender(job_path: Path) -> subprocess.CompletedProcess:
+    run = subprocess.run([_blender(), "-b", "--factory-startup", "--python-exit-code", "3", "--python", str(Path(__file__).with_name("blender_retarget.py")), "--", str(job_path)],
+                         capture_output=True, text=True, timeout=600)
+    errors = re.findall(r"KIMODO_ERROR: .*", run.stdout)
+    if errors:
+        raise ValueError(errors[0].removeprefix("KIMODO_ERROR: "))
+    return run
+
+
+class OpenHand(BaseModel):
+    hand: str = Field(description="LeftHand or RightHand.")
+    start: int = Field(description="Frame the hand starts to open.")
+    end: int = Field(description="Frame it's closed again.")
+    blend_frames: int = Field(default=8, ge=1, description="Frames spent opening and closing.")
+
+
+@tool
+def import_clip(
+    clip_path: Annotated[str, Field(description="An animated .fbx, .glb or .gltf on a humanoid rig, e.g. a Mixamo clip.")],
+    joint_map: Annotated[dict[str, str] | None, Field(description="SOMA joint -> bone name, for bones the automatic match misses.")] = None,
+    rig_path: Annotated[str | None, Field(description="Read the clip as it plays on this character (its curves on these bones, as an engine does), for when the clip was made on a slightly different skeleton. An .fbx.")] = None,
+) -> dict:
+    """Bring an animation from a rig file in as a new take, so it can be edited, joined, looped or used for locked poses. Needs Blender.
+
+    Retargeting the take back onto the same rig restores its body rotations and root. Fingers aren't imported: use hand_pose_from when exporting.
+    A clip made on another skeleton looks a little different on your character, so pass rig_path to match what your engine shows.
+    """
+    from kimodo.skeleton.registry import build_skeleton
+
+    clip = Path(clip_path).expanduser()
+    if not clip.is_file() or clip.suffix.lower() not in (".fbx", ".glb", ".gltf"):
+        raise ValueError(f"No .fbx, .glb or .gltf file at {clip}")
+    skel = build_skeleton(77)
+    names = list(skel.bone_index)
+    TAKES.mkdir(parents=True, exist_ok=True)
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        np.savez(tmp / "rest.npz", rest_joints=skel.neutral_joints.cpu().numpy())
+        job = {"mode": "import", "rig": str(Path(rig_path).expanduser()) if rig_path else str(clip), "clip": str(clip) if rig_path else None,
+               "motion": str(tmp / "rest.npz"), "names": names, "joint_map": joint_map, "out": str(tmp / "out.npz")}
+        (tmp / "job.json").write_text(json.dumps(job))
+        run = _run_blender(tmp / "job.json")
+        if not (tmp / "out.npz").exists():
+            raise RuntimeError(f"Blender failed ({run.returncode}): {(run.stdout + run.stderr)[-1500:]}")
+        data = dict(np.load(tmp / "out.npz"))
+    mapped = {str(j): i for i, j in enumerate(data["joints"])}
+    T = len(data["root"])
+    parents = skel.joint_parents.tolist()
+    glob = torch.zeros((T, len(names), 3, 3))
+    for i, n in enumerate(names):  # a joint the rig lacks turns with its parent
+        glob[:, i] = torch.as_tensor(data["global_rot_mats"][:, mapped[n]]) if n in mapped else glob[:, parents[i]]
+    root = torch.as_tensor(data["root"])
+    local = skel.global_rots_to_local_rots(glob)
+    fps = float(data["fps"])
+    if abs(fps - FPS) > 1e-3:
+        local, root, _ = edit.retime(local, root, [{"start": 0, "end": T - 1, "speed": fps / FPS}], 0)
+    new = edit.rebuild_motion(local, root, skel)
+    take = import_motion(new, [(f"Imported from {clip.stem}", len(local))], {"imported_clip": clip.name, "joints_matched": sorted(mapped)})
+    _live(take, f"Imported {clip.name}: {take}", metrics.one_line(metrics.analyze(new)), play=True)
+    return {"take_id": take, "frames": len(local), "source_fps": fps, "joints_matched": len(mapped)}
+
+
 @tool
 def retarget_preview(
     take_id: str,
@@ -1014,12 +1079,14 @@ def retarget_preview(
     view: Annotated[str, Field(description="side, front, three-quarter or top.")] = "three-quarter",
     export_format: Annotated[str, Field(description="File to write with the animation on your rig: fbx or glb.")] = "fbx",
     joint_map: Annotated[dict[str, str] | None, Field(description="SOMA joint -> your bone name, for bones the automatic match misses, e.g. {\"LeftShin\": \"calf_L\"}.")] = None,
+    hand_pose_from: Annotated[str | None, Field(description="An FBX clip on the same skeleton: hold its first frame's finger pose through the export, e.g. a grip, instead of the flat rest pose.")] = None,
+    open_hand: Annotated[list[OpenHand] | None, Field(description="Frames where a hand opens to the rig's rest finger pose, easing from and back to hand_pose_from, e.g. for a gesture.")] = None,
     lift_to_floor: Annotated[bool, Field(description="Raise the whole body, frame by frame with easing, so the rig's mesh stays on or above the floor. Reports the lift and any gap it leaves.")] = False,
 ) -> list:
     """Retarget a take onto your own character in headless Blender, render it, and write an animated file. The rig file isn't changed.
 
     Bone names are matched automatically for common styles (Mixamo, Unreal, Unity). Reports which bones were matched,
-    how far planted feet slide on the rig, and how far its mesh goes below the floor at the rendered frames. Fingers are left in the rest pose.
+    how far planted feet slide on the rig, and how far its mesh goes below the floor at the rendered frames. Fingers stay in the rest pose unless hand_pose_from is given.
     """
     rig = Path(rig_path).expanduser()
     if not rig.is_file() or rig.suffix.lower() not in (".fbx", ".glb", ".gltf"):
@@ -1041,14 +1108,12 @@ def retarget_preview(
     np.savez(source, global_rot_mats=np.asarray(motion["global_rot_mats"]), posed_joints=pj, rest_joints=skel.neutral_joints.cpu().numpy())
     picked = render.pick_frames(len(pj), frames)
     job = {"rig": str(rig), "motion": str(source), "names": names, "joint_map": joint_map, "frames": picked, "out_dir": str(out), "stem": stem,
-           "format": export_format, "fps": FPS, "camera_dir": list(render.VIEWS[view][0]), "lift_to_floor": lift_to_floor}
+           "format": export_format, "fps": FPS, "camera_dir": list(render.VIEWS[view][0]), "lift_to_floor": lift_to_floor,
+           "hand_pose_from": str(Path(hand_pose_from).expanduser()) if hand_pose_from else None,
+           "open_hand": [o.model_dump() for o in open_hand or []]}
     job_path = out / f"{stem}-job.json"
     job_path.write_text(json.dumps(job))
-    run = subprocess.run([_blender(), "-b", "--factory-startup", "--python-exit-code", "3", "--python", str(Path(__file__).with_name("blender_retarget.py")), "--", str(job_path)],
-                         capture_output=True, text=True, timeout=600)
-    errors = re.findall(r"KIMODO_ERROR: .*", run.stdout)
-    if errors:
-        raise ValueError(errors[0].removeprefix("KIMODO_ERROR: "))
+    run = _run_blender(job_path)
     report_path = out / f"{stem}-report.json"
     if run.returncode or not report_path.exists():
         raise RuntimeError(f"Blender failed ({run.returncode}): {(run.stdout + run.stderr)[-1500:]}")
@@ -1123,6 +1188,8 @@ def replay_recipe(
     info = root.get("mcp", {})
     if info.get("imported_from_demo"):
         raise ValueError(f"{root_id} came from the demo, whose generation settings weren't recorded, so it can't be replayed.")
+    if info.get("imported_clip"):
+        raise ValueError(f"{root_id} was imported from {info['imported_clip']}, not generated, so there's nothing to replay.")
     texts, secs = root.get("texts") or [root.get("text")], root.get("durations") or [root.get("duration")]
     cfg = root.get("cfg") or {}
     kf = [Keyframes(**k) for k in (info.get("keyframes_from") or [])]
@@ -1160,7 +1227,7 @@ def replay_recipe(
         elif kind == "plant_feet":
             r = plant_feet(current, [FootWindow(**w) for w in e["windows"]] if e.get("manual") else None, e.get("min_frames", 6), e.get("blend_frames", 4))
         elif kind == "join_takes":
-            r = join_takes([current, *e["takes"][1:]], e.get("blend_frames", 10))
+            r = join_takes([current, *e["takes"][1:]], e.get("blend_frames", 10), e.get("keep_facing", False))
         elif kind == "make_loop":
             r = make_loop(current, e["start"], e["end"], e.get("blend_frames", 10), e.get("in_place", False))
         else:

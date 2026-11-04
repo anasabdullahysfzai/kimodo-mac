@@ -192,6 +192,7 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 | `make_loop` | Makes a seamless cycle from chosen frames or the best match it can find, with optional in-place root. |
 | `check_rifle` | Draws a rifle fixed in the right hand and measures left hand gap, aim change, and floor contact. |
 | `retarget_preview` | Puts a take on your own FBX or glTF character in headless Blender, renders it, and writes an animated file. |
+| `import_clip` | Brings an animation from a rig file in as a take, optionally as it plays on your character. |
 | `save_animation`, `list_saved_animations` | Save an approved take under a clear name, with a BVH and a video, and list what's saved. |
 | `open_in_demo` | Loads a saved animation or a take in your open demo tabs. |
 | `list_takes` | Lists saved takes with prompts, settings, what each was edited from, and a one-line summary. |
@@ -300,7 +301,9 @@ These all save a new take and leave the source alone. Only partial locks run the
 
 **`check_rifle`** and `render_motion`'s `rifle_frame` use a stand-in rifle fixed in the right hand, aimed through the left hand at a reference frame you choose. It's placed from wrist joints, so its place in the hands is approximate, and it isn't exported. It stays in the hand, so frames after the character would let go show it going through the floor; limit the check with `end`.
 
-**`retarget_preview`** needs Blender (set `KIMODO_BLENDER` if it isn't in `/Applications` or on your `PATH`). It matches common bone names (Mixamo, Unreal, Unity); pass `joint_map` for others. It corrects each bone's rest direction, so T-pose and A-pose rigs both work, and scales root motion by hip height. It doesn't change your rig file. With `lift_to_floor`, it raises the whole body frame by frame so the rig's mesh stays on or above the file's ground plane (z=0), and reports the lift and any gap left. Fingers stay in the rest pose, and nothing fixes contacts for different proportions, so look at the reported foot slide and floor numbers.
+**`retarget_preview`** needs Blender (set `KIMODO_BLENDER` if it isn't in `/Applications` or on your `PATH`). It matches common bone names (Mixamo, Unreal, Unity); pass `joint_map` for others. It corrects each bone's rest direction, so T-pose and A-pose rigs both work, and scales root motion by hip height. It doesn't change your rig file. `hand_pose_from` holds the first-frame finger pose of a clip on the same skeleton, e.g. a rifle grip, and `open_hand` opens a hand to the rig's rest pose over chosen frames, e.g. for a gesture. With `lift_to_floor`, it raises the whole body frame by frame so the rig's mesh stays on or above the file's ground plane (z=0), and reports the lift and any gap left. Otherwise fingers stay in the rest pose. Nothing fixes contacts for different proportions, so look at the reported foot slide and floor numbers.
+
+**`import_clip`** needs Blender. A clip made on a slightly different skeleton looks different on your character, so pass `rig_path` to read it as your engine shows it. Tested: Mixamo's Rifle Idle, read this way and retargeted back with `hand_pose_from`, matched the clip played directly on the character at every bone and frame (0.0 cm). `join_takes` also takes `keep_facing`, which moves clips without turning them.
 
 Tested on a Mixamo character: the exported FBX reimported with bones exactly on the computed positions, and a copy with arms lowered 45 degrees, Unreal bone names and a 90 degree turn gave the same bone directions (0.0 degree difference). It hasn't been tested inside a game engine.
 

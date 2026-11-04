@@ -279,6 +279,8 @@ assert starts == [0, 80] and len(jl) == 150 and errs[0] < 0.02  # the same motio
 assert float((jr - rt).norm(dim=-1).max()) < 0.02
 assert float((jr[1:] - jr[:-1]).norm(dim=-1).max()) < 2 * float((rt[1:] - rt[:-1]).norm(dim=-1).max())  # no jump
 assert torch.equal(jl[:80], loc77[:80])
+kl, kr, _, _ = edit.join_clips([(loc77[:90], rt[:90]), (turned_l[80:], turned_r[80:])], sk77, 10, keep_facing=True)
+assert torch.equal(kl[-1, 0], turned_l[-1, 0])  # keep_facing doesn't turn the second clip
 
 # edit.make_loop: the last frame leads smoothly into the first; in_place removes the travel
 ml, mr, travel = edit.make_loop(loc77, rt, 30, 90, 10)

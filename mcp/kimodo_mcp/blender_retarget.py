@@ -55,12 +55,56 @@ def shortest(a: Vector, b: Vector) -> Matrix:
     return a.normalized().rotation_difference(b.normalized()).to_matrix()
 
 
+def read_clip(job, arm, bone_of, correction, W, a_rot3, scale, floor) -> None:
+    """The reverse of the retarget: write a clip on a rig as SOMA global rotations and root positions."""
+    action = arm.animation_data.action if arm.animation_data else None
+    if action is None:
+        raise SystemExit("KIMODO_ERROR: this file has no animation")
+    scene = bpy.context.scene
+    first, last = (int(round(x)) for x in action.frame_range)
+    joints = list(bone_of)
+    W_inv = W.inverted()
+    hips = bone_of["Hips"]
+    base = arm.matrix_world @ hips.head_local
+    rots, root = [], []
+    undo = {j: (correction[j] @ a_rot3 @ bone_of[j].matrix_local.to_3x3()).inverted() for j in joints}
+    for f in range(first, last + 1):
+        scene.frame_set(f)
+        rots.append([list(map(list, W_inv @ (a_rot3 @ arm.pose.bones[bone_of[j].name].matrix.to_3x3()) @ undo[j] @ W)) for j in joints])
+        world = arm.matrix_world @ arm.pose.bones[hips.name].head
+        root.append(list((W_inv @ (world - Vector((base.x, base.y, floor)))) / scale))
+    np.savez(job["out"], joints=np.array(joints), global_rot_mats=np.array(rots, dtype=np.float32), root=np.array(root, dtype=np.float32), fps=float(scene.render.fps))
+
+
+def first_frame_fingers(path: str, hands, arm, joint_of) -> dict:
+    """Local rotations at a clip's first frame for the bones below the hands, as that clip would play on this rig."""
+    wanted = [b.name for hand in hands for b in hand.children_recursive if b.name not in joint_of]
+    existing, kept = set(bpy.data.objects), {}
+    bpy.ops.import_scene.fbx(filepath=path, automatic_bone_orientation=False, ignore_leaf_bones=False)
+    added = set(bpy.data.objects) - existing
+    clip = next((o for o in added if o.type == "ARMATURE"), None)
+    if clip is None or not clip.animation_data or not clip.animation_data.action:
+        raise SystemExit("KIMODO_ERROR: hand_pose_from has no animated armature")
+    bpy.context.scene.frame_set(int(round(clip.animation_data.action.frame_range[0])))
+    bpy.context.view_layer.update()
+    missing = [n for n in wanted if n not in clip.pose.bones]
+    if missing:
+        raise SystemExit(f"KIMODO_ERROR: hand_pose_from lacks these bones: {missing[:10]}")
+    for n in wanted:  # the clip's own curve values: what an engine shows when it plays that clip on this rig
+        kept[n] = clip.pose.bones[n].matrix_basis.copy()
+    for o in added:
+        bpy.data.objects.remove(o, do_unlink=True)
+    return kept
+
+
 def main():
     job = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text())
     data = np.load(job["motion"])
     names = list(job["names"])
     idx = {n: i for i, n in enumerate(names)}
-    gr, pj, rest = data["global_rot_mats"], data["posed_joints"], data["rest_joints"]
+    rest = data["rest_joints"]
+    importing = job.get("mode") == "import"
+    gr, pj = (None, None) if importing else (data["global_rot_mats"], data["posed_joints"])
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     rig = job["rig"]
@@ -72,7 +116,8 @@ def main():
     if not armatures:
         raise SystemExit("KIMODO_ERROR: no armature in the rig file")
     arm = max(armatures, key=lambda o: len(o.data.bones))
-    arm.animation_data_clear()
+    if not importing:
+        arm.animation_data_clear()
     bones = arm.data.bones
 
     mapping = auto_map([b.name for b in bones])
@@ -114,6 +159,29 @@ def main():
             correction[j] = previous  # hands, head and toes keep their parent's correction
     joint_of = {b.name: j for j, b in bone_of.items()}
 
+    if importing:
+        if job.get("clip"):  # the clip as an engine shows it on this rig: its curves on this rig's bones
+            existing = set(bpy.data.objects)
+            bpy.ops.import_scene.fbx(filepath=job["clip"], automatic_bone_orientation=False, ignore_leaf_bones=False)
+            added = set(bpy.data.objects) - existing
+            source = next((o for o in added if o.type == "ARMATURE"), None)
+            if source is None or not source.animation_data or not source.animation_data.action:
+                raise SystemExit("KIMODO_ERROR: the clip has no animated armature")
+            action = source.animation_data.action
+            action.use_fake_user = True
+            for o in added:
+                bpy.data.objects.remove(o, do_unlink=True)
+            arm.animation_data_create()
+            arm.animation_data.action = action
+            if hasattr(arm.animation_data, "action_slot") and action.slots:
+                arm.animation_data.action_slot = action.slots[0]
+        read_clip(job, arm, bone_of, correction, W, a_rot3, scale, floor)
+        return
+
+    finger_basis = {}
+    if job.get("hand_pose_from"):
+        finger_basis = first_frame_fingers(job["hand_pose_from"], [bone_of[h] for h in ("LeftHand", "RightHand")], arm, joint_of)
+
     def walk(b):
         yield b
         for c in b.children:
@@ -128,6 +196,18 @@ def main():
     scene.render.fps, scene.frame_start, scene.frame_end = job.get("fps", 30), 0, T - 1
     tracked = {j: np.zeros((T, 3)) for j in bone_of}
     hips_name = bone_of["Hips"].name
+    open_weights = {}  # finger bone -> per-frame weight toward the rest pose, an open hand
+    for span in job.get("open_hand") or []:
+        if span["hand"] not in bone_of:
+            raise SystemExit(f"KIMODO_ERROR: open_hand: no bone for {span['hand']}")
+        frames = np.arange(T)
+        rise = np.clip((frames - span["start"]) / max(span["blend_frames"], 1), 0, 1)
+        fall = np.clip((span["end"] - frames) / max(span["blend_frames"], 1), 0, 1)
+        weight = (rise * rise * (3 - 2 * rise)) * (fall * fall * (3 - 2 * fall))
+        for child in bone_of[span["hand"]].children_recursive:
+            if child.name not in joint_of:
+                open_weights[child.name] = np.maximum(open_weights.get(child.name, 0.0), weight)
+
     def bake(lift) -> None:
         """Key every frame, with the hips raised by lift[f]."""
         for f in range(T):
@@ -137,6 +217,14 @@ def main():
                 chain = pose[b.parent.name] @ offset if b.parent else offset
                 j = joint_of.get(b.name)
                 if j is None:
+                    if b.name in finger_basis or b.name in open_weights:
+                        basis = finger_basis.get(b.name, Matrix.Identity(4))
+                        if b.name in open_weights:
+                            basis = basis.to_quaternion().slerp(Quaternion(), float(open_weights[b.name][f])).to_matrix().to_4x4()
+                        pb = arm.pose.bones[b.name]
+                        pb.matrix_basis = basis
+                        pb.keyframe_insert("rotation_quaternion", frame=f)
+                        chain = chain @ basis
                     pose[b.name] = chain
                     continue
                 S = W @ Matrix(gr[f, idx[j]].tolist()) @ W_inv

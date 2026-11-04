@@ -402,9 +402,10 @@ def _turned(local, root, root_idx: int, yaw: float, pivot_from, pivot_to):
     return out, (root - pivot_from) @ ry.T + pivot_to
 
 
-def join_clips(clips: list[tuple], skeleton, blend_frames: int = 10):
+def join_clips(clips: list[tuple], skeleton, blend_frames: int = 10, keep_facing: bool = False):
     """Join clips [(local, root), ...] end to start, each turned and moved to continue from the last, cross-faded.
 
+    keep_facing only moves each clip and doesn't turn it, for clips that already share a facing.
     Returns (local, root, first frame of each clip in the result, pose mismatch in metres at the middle of each fade).
     """
     from kimodo.geometry import matrix_to_quaternion, quaternion_to_matrix
@@ -424,7 +425,7 @@ def join_clips(clips: list[tuple], skeleton, blend_frames: int = 10):
         _, pa, _ = skeleton.fk(local[[at_prev]], root[[at_prev]])
         _, pb, _ = skeleton.fk(next_local[[at_next]], next_root[[at_next]])
         fa, fb = facing_at(pa, names, 0), facing_at(pb, names, 0)
-        yaw = float(torch.atan2(fa[0], fa[2]) - torch.atan2(fb[0], fb[2]))
+        yaw = 0.0 if keep_facing else float(torch.atan2(fa[0], fa[2]) - torch.atan2(fb[0], fb[2]))
         ground = torch.tensor([1.0, 0.0, 1.0], dtype=root.dtype)
         moved_local, moved_root = _turned(next_local, next_root, skeleton.root_idx, yaw, next_root[at_next] * ground, root[at_prev] * ground)
         qa, qb = matrix_to_quaternion(local[start:]), matrix_to_quaternion(moved_local[:b])
