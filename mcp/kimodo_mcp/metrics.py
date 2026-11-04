@@ -180,3 +180,148 @@ def one_line(m: dict) -> str:
         f"turn {m.get('heading_change_deg', 'n/a')} deg"
         + (f" (frames {m['turn_window_frames'][0]}-{m['turn_window_frames'][1]})" if "turn_window_frames" in m else "")
     )
+
+
+FINGERS = ("Thumb", "Index", "Middle", "Ring", "Pinky")
+
+
+def _runs(mask: np.ndarray) -> list[list[int]]:
+    """[first, last] frame of each run of True."""
+    edges = np.flatnonzero(np.diff(np.r_[0, mask.astype(int), 0]))
+    return [[int(a), int(b) - 1] for a, b in zip(edges[::2], edges[1::2])]
+
+
+def audit(motion: dict, lowest: np.ndarray | None = None) -> dict:
+    """List things worth looking at, with frames. These are prompts to check, not verdicts: a freeze is a flaw in a
+    hit reaction but correct in a held pose, and a reversal is a flaw in a fall but normal in a dance.
+
+    lowest: lowest mesh height per frame, for the floor check (joints alone miss knees and hands).
+    """
+    pj = np.asarray(motion["posed_joints"], dtype=np.float64)
+    T = len(pj)
+    names = _joint_names(pj.shape[1])
+    idx = {n: i for i, n in enumerate(names)}
+    body = [i for i, n in enumerate(names) if not any(k in n for k in FINGERS)]
+    findings = []
+
+    def add(kind, frames, detail):
+        findings.append({"type": kind, "frames": frames, "detail": detail})
+
+    if lowest is not None:
+        for a, b in _runs(np.asarray(lowest) < -0.02):
+            add("floor_sink", [a, b], f"mesh up to {-float(np.min(lowest[a : b + 1])) * 100:.0f} cm below the floor")
+
+    # planted feet that slide: little height change and low height, but moving sideways
+    for side in ("Left", "Right"):
+        foot = pj[:, idx[f"{side}Foot"]]
+        step = np.linalg.norm(np.diff(foot[:, [0, 2]], axis=0), axis=1)
+        planted = (foot[:-1, 1] < 0.2) & (step * FPS < 0.6)
+        for a, b in _runs(planted):
+            dist = float(np.linalg.norm(foot[b + 1, [0, 2]] - foot[a, [0, 2]]))
+            if b - a >= 10 and dist > 0.05:
+                add("foot_slide", [a, b], f"{side} foot slides {dist * 100:.0f} cm while planted")
+
+    body_acc = np.linalg.norm(np.diff(pj[:, body], 2, axis=0), axis=-1).mean(1) * FPS**2
+    for a, b in _runs(body_acc > 25):
+        add("jerk", [a + 1, b + 1], f"body acceleration up to {body_acc[a : b + 1].max():.0f} m/s2")
+
+    hands = (pj[:, idx["LeftHand"]] + pj[:, idx["RightHand"]]) / 2
+    speed = np.linalg.norm(np.diff(hands, axis=0), axis=1) * FPS
+    hand_acc = np.abs(np.diff(speed)) * FPS
+    for a, b in _runs(hand_acc > 35):
+        add("whip", [a + 1, b + 1], f"hands accelerate up to {hand_acc[a : b + 1].max():.0f} m/s2")
+
+    # freeze: fast, nearly stopped, then fast again
+    f = 1
+    while f < len(speed) - 1:
+        before = speed[max(f - 10, 0) : f]
+        after = speed[f + 1 : f + 16]
+        if speed[f] == speed[max(f - 3, 0) : f + 4].min() and len(before) and len(after):
+            if before.max() >= 1.5 and after.max() >= 1.0 and speed[f] < 0.25 * min(before.max(), after.max()):
+                add("freeze", [f, f], f"hands go from {before.max():.1f} to {speed[f]:.1f} m/s, then back to {after.max():.1f}")
+                f += 10
+        f += 1
+
+    # reversal: the head travels one way, then back, each by at least 25 cm, relative to the hips
+    across = pj[:, idx["LeftLeg"]] - pj[:, idx["RightLeg"]]
+    fwd = np.array([-across[0, 2], across[0, 0]]) / (np.linalg.norm(across[0, [0, 2]]) + 1e-9)
+    z = pj[:, idx["Head"]][:, [0, 2]] @ fwd
+    f = 1
+    while f < T - 1:
+        w = z[max(f - 8, 0) : f + 9]
+        before, after = z[max(f - FPS, 0) : f + 1], z[f : f + FPS + 1]
+        if z[f] == w.min() and before.max() - z[f] >= 0.25 and after.max() - z[f] >= 0.25:
+            add("reversal", [f, f], f"head moves {(before.max() - z[f]) * 100:.0f} cm back, then {(after.max() - z[f]) * 100:.0f} cm forward again")
+            f += FPS
+        elif z[f] == w.max() and z[f] - before.min() >= 0.25 and z[f] - after.min() >= 0.25:
+            add("reversal", [f, f], f"head moves {(z[f] - before.min()) * 100:.0f} cm forward, then {(z[f] - after.min()) * 100:.0f} cm back again")
+            f += FPS
+        f += 1
+
+    final = np.linalg.norm(pj[-1] - pj, axis=-1).mean(1)
+    moving = np.flatnonzero(final >= 0.03)
+    settled = int(moving[-1]) + 1 if len(moving) else 0
+    if (T - settled) / FPS > 1.0:
+        add("idle_tail", [settled, T - 1], f"{(T - settled) / FPS:.1f} s of almost no movement at the end")
+
+    counts = {}
+    for item in findings:
+        counts[item["type"]] = counts.get(item["type"], 0) + 1
+    return {
+        "findings": sorted(findings, key=lambda x: x["frames"][0]),
+        "counts": counts,
+        "floor_sink_max_m": None if lowest is None else round(float(max(-np.min(lowest), 0)), 3),
+        "hand_accel_peak_m_per_s2": round(float(hand_acc.max()), 1),
+        "body_accel_peak_m_per_s2": round(float(body_acc.max()), 1),
+    }
+
+
+def match_pose(motion: dict, reference: dict, reference_frame: int) -> dict:
+    """Find the frames of a motion closest to one pose of another motion.
+
+    Compares body joints relative to the hips, with both poses turned to the same facing, so where the
+    character stands and which way it faces don't count. Error is the mean joint distance in metres.
+    """
+    def norm(pj):
+        names = _joint_names(pj.shape[1])
+        idx = {n: i for i, n in enumerate(names)}
+        keep = [i for i, n in enumerate(names) if not any(k in n for k in FINGERS)]
+        across = pj[:, idx["LeftLeg"]] - pj[:, idx["RightLeg"]]
+        angle = np.arctan2(across[:, 2], across[:, 0])
+        rel = pj - pj[:, idx["Hips"]][:, None]
+        c, s = np.cos(angle), np.sin(angle)
+        x, z = rel[..., 0], rel[..., 2]
+        out = np.stack([x * c[:, None] + z * s[:, None], rel[..., 1], -x * s[:, None] + z * c[:, None]], -1)
+        return out[:, keep]
+
+    a = norm(np.asarray(motion["posed_joints"], dtype=np.float64))
+    b = norm(np.asarray(reference["posed_joints"], dtype=np.float64)[[reference_frame]])
+    if a.shape[1] != b.shape[1]:
+        raise ValueError("Takes use different skeletons")
+    err = np.linalg.norm(a - b, axis=-1).mean(1)
+    best = [int(i) for i in np.argsort(err)[:3]]
+    return {"best_frame": best[0], "error_m": round(float(err[best[0]]), 3), "closest": [{"frame": i, "error_m": round(float(err[i]), 3)} for i in best]}
+
+
+def resolve_metric(data: dict, path: str):
+    """A value from nested dicts by dotted path, e.g. end_pose.head_height_m or audit.counts.freeze."""
+    node = data
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def score(data: dict, criteria: list[dict]) -> dict:
+    """Check criteria ({metric, op, value}) against metrics. A missing audit count means zero findings of that type."""
+    ops = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b, "==": lambda a, b: a == b}
+    results = []
+    for c in criteria:
+        if c["op"] not in ops:
+            raise ValueError(f"op must be one of {', '.join(ops)}")
+        value = resolve_metric(data, c["metric"])
+        if value is None and c["metric"].startswith("audit.counts."):
+            value = 0
+        results.append({**c, "actual": value, "passed": value is not None and bool(ops[c["op"]](value, c["value"]))})
+    return {"passed": sum(r["passed"] for r in results), "total": len(results), "results": results}

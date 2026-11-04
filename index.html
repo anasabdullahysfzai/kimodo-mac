@@ -363,8 +363,18 @@ hf download NousResearch/Meta-Llama-3-8B-Instruct --exclude "original/*"</code><
         <tr><td><code>export_motion</code></td><td>BVH, Kimodo NPZ, or an MP4 render.</td></tr>
         <tr><td><code>add_layer</code></td><td>Add curve-driven rotation to chosen joints of a finished take, with no model run. Impacts, recoil, a slump, a head turn. Includes impact presets.</td></tr>
         <tr><td><code>regenerate_range</code></td><td>Redo only a frame range, optionally with a new prompt. Every other frame stays exactly as it was.</td></tr>
+        <tr><td><code>view_motion</code></td><td>See motion over time: speed, height and front-back curves, plus an onion skin with joint paths.</td></tr>
+        <tr><td><code>audit_motion</code></td><td>List possible flaws with frames: floor sink, foot slide, jerk, whip, freeze, reversal, idle tail.</td></tr>
+        <tr><td><code>compare_takes</code></td><td>Show takes one above the other at the same frames, with key numbers.</td></tr>
+        <tr><td><code>score_takes</code></td><td>Score and rank takes against criteria.</td></tr>
+        <tr><td><code>match_pose</code></td><td>Find the closest frames to a pose from another take.</td></tr>
+        <tr><td><code>set_joint_target</code></td><td>Move or pin a hand or foot by bending its limb (two-bone IK).</td></tr>
+        <tr><td><code>get_recipe</code>, <code>replay_recipe</code></td><td>Show or rerun the steps behind a take, optionally with a new seed.</td></tr>
+        <tr><td><code>smooth_motion</code></td><td>Soften jerks in a frame range, with no model run.</td></tr>
         <tr><td><code>fix_ground</code></td><td>Raise the body smoothly wherever it goes through the floor.</td></tr>
         <tr><td><code>trim_take</code></td><td>Cut a take to a frame range.</td></tr>
+        <tr><td><code>save_animation</code></td><td>Save an approved take under a clear name, with a BVH and a video. It then shows in the demo's Saved Animations panel.</td></tr>
+        <tr><td><code>open_in_demo</code></td><td>Load a saved animation or a take in your open demo tabs.</td></tr>
         <tr><td><code>list_takes</code></td><td>Saved takes with prompts, settings and a summary.</td></tr>
       </table>
 

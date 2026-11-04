@@ -152,3 +152,145 @@ def video(motion: dict, path: str, view: str = "side", size: int = 480, step: in
     frames = list(range(0, len(motion["posed_joints"]), step))
     imgs = [np.asarray(contact_sheet(motion, [f], view=view, tile=size, cols=1)) for f in frames]
     iio.imwrite(path, np.stack(imgs), extension=".mp4", fps=FPS / step, codec="h264", plugin="pyav")
+
+
+CURVE_COLORS = [(214, 48, 49), (9, 132, 227), (0, 148, 100), (225, 112, 40), (108, 92, 231), (120, 120, 130), (232, 67, 147), (0, 160, 170)]
+
+
+def motion_curves(motion: dict, joints: list[str], start: int = 0, end: int | None = None, marks: list[int] | None = None, width: int = 1200) -> Image.Image:
+    """Speed, height and front-back position of joints over time, one panel each, so motion can be read from one image.
+
+    marks: frames to draw as dashed lines, e.g. prompt boundaries. Front-back is measured along the starting
+    facing, relative to the hips, so a rocking torso shows up even when the character travels.
+    """
+    from .metrics import _joint_names
+
+    pj = np.asarray(motion["posed_joints"], dtype=np.float64)
+    names = _joint_names(pj.shape[1])
+    missing = [j for j in joints if j not in names]
+    if missing:
+        raise ValueError(f"Unknown joints {missing}")
+    end = len(pj) - 1 if end is None else min(end, len(pj) - 1)
+    frames = np.arange(start, end + 1)
+    across = pj[0, names.index("LeftLeg")] - pj[0, names.index("RightLeg")]
+    fwd = np.array([-across[2], across[0]]) / (np.linalg.norm(across[[0, 2]]) + 1e-9)
+    hips = pj[:, names.index("Hips")]
+    panels = []
+    for j in joints:
+        p = pj[:, names.index(j)]
+        speed = np.r_[np.linalg.norm(np.diff(p, axis=0), axis=1) * FPS_RENDER, 0.0]
+        panels.append((j, speed[frames], p[frames, 1], ((p - hips)[:, [0, 2]] @ fwd)[frames]))
+    titles = ["speed (m/s)", "height (m)", "front-back vs hips (m, + = forward)"]
+    panel_h, top, left, right = 210, 26, 62, 20
+    img = Image.new("RGB", (width, 3 * panel_h + 30), "white")
+    draw = ImageDraw.Draw(img)
+    font, small = _font(14), _font(11)
+    x_at = lambda f: left + (f - start) / max(end - start, 1) * (width - left - right)
+    for k, title in enumerate(titles):
+        y0 = k * panel_h + top
+        y1 = y0 + panel_h - top - 16
+        series = [p[k + 1] for p in panels]
+        lo, hi = min(s.min() for s in series), max(s.max() for s in series)
+        pad = max((hi - lo) * 0.08, 0.02)
+        lo, hi = lo - pad, hi + pad
+        y_at = lambda v: y1 - (v - lo) / (hi - lo) * (y1 - y0)
+        draw.text((left, y0 - 18), title, fill=INK, font=font)
+        step = next(s for s in (0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50) if (hi - lo) / s <= 6)
+        for v in np.arange(np.ceil(lo / step) * step, hi, step):
+            draw.line([(left, y_at(v)), (width - right, y_at(v))], fill=(232, 234, 240))
+            draw.text((6, y_at(v) - 6), f"{v:g}", fill=(90, 94, 115), font=small)
+        tick = next(s for s in (5, 10, 15, 30, 60, 90, 150, 300) if (end - start) / s <= 14)
+        for f in range(start - start % tick + (tick if start % tick else 0), end + 1, tick):
+            draw.line([(x_at(f), y0), (x_at(f), y1)], fill=(232, 234, 240))
+            draw.text((x_at(f) - 8, y1 + 2), f"f{f}", fill=(90, 94, 115), font=small)
+        for f in marks or []:
+            if start <= f <= end:
+                for y in range(int(y0), int(y1), 8):
+                    draw.line([(x_at(f), y), (x_at(f), y + 4)], fill=(40, 44, 70))
+        for c, (_, *vals) in enumerate(panels):
+            pts = [(x_at(f), y_at(v)) for f, v in zip(frames, vals[k])]
+            draw.line(pts, fill=CURVE_COLORS[c % len(CURVE_COLORS)], width=2)
+    x = left + 330
+    for c, (j, *_) in enumerate(panels):
+        draw.line([(x, 14), (x + 18, 14)], fill=CURVE_COLORS[c % len(CURVE_COLORS)], width=3)
+        draw.text((x + 22, 6), j, fill=INK, font=small)
+        x += 34 + int(draw.textlength(j, font=small))
+    return img
+
+
+FPS_RENDER = 30
+
+
+def onion_skin(motion: dict, frames: list[int], view: str = "side", trail_joints: list[str] | None = None, size: int = 760) -> Image.Image:
+    """Overlay several poses in one picture (later poses more solid), with the paths of chosen joints.
+
+    The camera stays fixed, so travel is visible, unlike the contact sheet, which recentres each tile.
+    """
+    from .metrics import _joint_names
+
+    pj, gr = np.asarray(motion["posed_joints"]), np.asarray(motion["global_rot_mats"])
+    verts, faces = skin_vertices(gr[frames], pj[frames])
+    forward, right, up = _camera(view)
+    light = -forward + np.array([-0.3, 0.8, 0.2])
+    light /= np.linalg.norm(light)
+    names = _joint_names(pj.shape[1])
+    first, last = frames[0], frames[-1]
+    span = pj[first : last + 1, [names.index(j) for j in (trail_joints or [])]] if trail_joints else np.empty((0, 0, 3))
+    all_pts = np.concatenate([verts.reshape(-1, 3), span.reshape(-1, 3)]) if span.size else verts.reshape(-1, 3)
+    u, v = all_pts @ right, all_pts @ up
+    level = abs(up[1] - 1) < 1e-6
+    v_lo = min(v.min(), 0.0) if level else v.min()
+    scale = min((size - 40) / max(u.max() - u.min(), 0.1), (size - 60) / max(v.max() - v_lo, 0.1))
+    cx, cy = (u.max() + u.min()) / 2, v_lo
+    to_px = lambda a, b: (size / 2 + (a - cx) * scale, size - 30 - (b - cy) * scale)
+    img = Image.new("RGBA", (size, size), BG + (255,))
+    draw = ImageDraw.Draw(img)
+    if level:
+        for h in np.arange(0.0, v.max() + 0.5, 0.5):
+            y = to_px(0, h)[1]
+            if y > 0:
+                draw.line([(10, y), (size - 10, y)], fill=GRID if h else INK)
+                if h:
+                    draw.text((12, y - 13), f"{h:.1f} m", fill=(150, 156, 186), font=_font(11))
+    for k in range(len(frames)):
+        layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        tri = verts[k][faces]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-9
+        vis = n @ forward < 0
+        d = (verts[k] @ forward)[faces[vis]].mean(1)
+        shade = (0.4 + 0.6 * np.clip(n[vis] @ light, 0, 1))[:, None]
+        cols = (BODY[None] * shade).clip(0, 255).astype(np.uint8)
+        px = np.stack(to_px(verts[k] @ right, verts[k] @ up), axis=-1)[faces[vis]]
+        for i in np.argsort(-d):
+            ld.polygon([tuple(q) for q in px[i]], fill=tuple(cols[i]) + (255,))
+        alpha = 70 + int(185 * (k + 1) / len(frames)) if k < len(frames) - 1 else 255
+        layer.putalpha(layer.getchannel("A").point(lambda a: a * alpha // 255))
+        img = Image.alpha_composite(img, layer)
+    draw = ImageDraw.Draw(img)
+    for c, j in enumerate(trail_joints or []):
+        path = pj[first : last + 1, names.index(j)]
+        pts = [to_px(q @ right, q @ up) for q in path]
+        col = CURVE_COLORS[c % len(CURVE_COLORS)]
+        if len(pts) > 1:
+            draw.line(pts, fill=col, width=2)
+        for q in pts[::5]:  # a dot every 5 frames: wide gaps mean fast, bunched dots mean slow
+            draw.ellipse([q[0] - 2, q[1] - 2, q[0] + 2, q[1] + 2], fill=col)
+        draw.text((12, 8 + 15 * c), j, fill=col, font=_font(12))
+    draw.text((size - 190, 8), f"f{first}-f{last}, {len(frames)} poses", fill=INK, font=_font(13))
+    return img.convert("RGB")
+
+
+def stack_labelled(rows: list[tuple[str, Image.Image]]) -> Image.Image:
+    """Stack images vertically with a label above each."""
+    width = max(i.width for _, i in rows)
+    height = sum(i.height + 24 for _, i in rows)
+    out = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(out)
+    y = 0
+    for label, img in rows:
+        draw.text((8, y + 4), label, fill=INK, font=_font(15))
+        out.paste(img, (0, y + 24))
+        y += img.height + 24
+    return out

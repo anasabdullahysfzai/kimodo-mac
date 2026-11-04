@@ -113,6 +113,71 @@ def apply_layers(local_rots: torch.Tensor, root_positions: torch.Tensor, skeleto
     return local
 
 
+IK_CHAINS = {
+    "LeftHand": ("LeftArm", "LeftForeArm", "LeftHand"),
+    "RightHand": ("RightArm", "RightForeArm", "RightHand"),
+    "LeftFoot": ("LeftLeg", "LeftShin", "LeftFoot"),
+    "RightFoot": ("RightLeg", "RightShin", "RightFoot"),
+}
+
+
+def _unit(v: torch.Tensor) -> torch.Tensor:
+    return v / (v.norm(dim=-1, keepdim=True) + 1e-9)
+
+
+def two_bone_ik(local_rots, root_positions, skeleton, joint: str, targets, weights):
+    """Move a hand or foot toward target positions by bending its limb; the end joint keeps its world orientation.
+
+    targets: [T,3] world positions. weights: [T] from 0 (unchanged) to 1 (at target). Returns (new local
+    rotations, frames whose target was out of reach; those stop at full stretch).
+    """
+    from kimodo.geometry import axis_angle_to_matrix
+
+    if joint not in IK_CHAINS:
+        raise ValueError(f"joint must be one of {', '.join(IK_CHAINS)}")
+    names = list(skeleton.bone_index)
+    parents = skeleton.joint_parents.tolist()
+    ia, ib, ic = (names.index(n) for n in IK_CHAINS[joint])
+    local = local_rots.clone()
+    gr, pos, _ = skeleton.fk(local, root_positions)
+    w = torch.as_tensor(np.asarray(weights), dtype=local.dtype)
+    frames = torch.nonzero(w > 0).flatten()
+    if len(frames) == 0:
+        return local, []
+    a, b, c = pos[frames, ia], pos[frames, ib], pos[frames, ic]
+    t = c + w[frames, None] * (torch.as_tensor(targets, dtype=local.dtype)[frames] - c)
+    ga, gb, gc = gr[frames, ia], gr[frames, ib], gr[frames, ic]
+    lab, lbc = (b - a).norm(dim=-1), (c - b).norm(dim=-1)
+    reach = (t - a).norm(dim=-1)
+    lat = torch.minimum(torch.maximum(reach, (lab - lbc).abs() + 1e-3), lab + lbc - 1e-3)
+    unreachable = [int(f) for f, r, l in zip(frames, reach, lat) if r > l + 1e-3]
+
+    cos = lambda x: torch.acos(torch.clamp(x, -1 + 1e-6, 1 - 1e-6))
+    ac_ab0 = cos((_unit(c - a) * _unit(b - a)).sum(-1))
+    ba_bc0 = cos((_unit(a - b) * _unit(c - b)).sum(-1))
+    ac_ab1 = cos((lbc**2 - lab**2 - lat**2) / (-2 * lab * lat))
+    ba_bc1 = cos((lat**2 - lab**2 - lbc**2) / (-2 * lab * lbc))
+    bend = torch.linalg.cross(c - a, b - a)
+    degenerate = bend.norm(dim=-1) < 1e-5  # a straight limb has no bend plane; use the joint's own axis
+    bend[degenerate] = (ga[degenerate] @ torch.tensor([1.0, 0.0, 0.0], dtype=local.dtype))
+    axis0 = _unit(bend)
+    swing = torch.linalg.cross(c - a, t - a)
+    has_swing = swing.norm(dim=-1) > 1e-7
+    axis1 = torch.where(has_swing[:, None], _unit(swing), axis0)
+    ac_at = torch.where(has_swing, cos((_unit(c - a) * _unit(t - a)).sum(-1)), torch.zeros_like(lab))
+
+    to_local = lambda rot, v: (rot.transpose(1, 2) @ v[..., None])[..., 0]
+    r_a1 = axis_angle_to_matrix(to_local(ga, axis0) * (ac_ab1 - ac_ab0)[:, None])
+    r_b = axis_angle_to_matrix(to_local(gb, axis0) * (ba_bc1 - ba_bc0)[:, None])
+    r_a2 = axis_angle_to_matrix(to_local(ga, axis1) * ac_at[:, None])
+    local[frames, ia] = local[frames, ia] @ r_a1 @ r_a2
+    local[frames, ib] = local[frames, ib] @ r_b
+    parent_a = gr[frames, parents[ia]]
+    new_b = parent_a @ local[frames, ia] @ local[frames, ib]
+    local[frames, ic] = new_b.transpose(1, 2) @ gc
+    return local, unreachable
+
+
 def preset_layers(name: str, start: int, strength: float = 1.0) -> list[dict]:
     """Impact reactions as plain layers. front/back = where the bullet comes from; left/right = shoulder hit."""
     s = strength
@@ -155,6 +220,34 @@ def splice_range(src_local, src_root, new_local, new_root, start: int, end: int,
     local[outside], root[outside] = src_local[outside], src_root[outside]
     local[inside], root[inside] = new_local[inside], new_root[inside]
     return local, root
+
+
+def gaussian_smooth(local_rots, root_positions, sigma_frames: float, joints=None, smooth_root: bool = True):
+    """Smooth motion over time with a Gaussian window; returns new (local rotations, root).
+
+    joints: indices to smooth (default all). Rotations are averaged as quaternions, on the shortest path.
+    """
+    from kimodo.geometry import matrix_to_quaternion, quaternion_to_matrix
+
+    r = max(int(round(sigma_frames * 3)), 1)
+    weights = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma_frames) ** 2)
+    weights = torch.as_tensor(weights / weights.sum(), dtype=local_rots.dtype)
+    T = len(local_rots)
+    q = matrix_to_quaternion(local_rots)
+    out_q, out_root = q.clone(), root_positions.clone()
+    for t in range(T):
+        idx = torch.clamp(torch.arange(t - r, t + r + 1), 0, T - 1)  # the ends repeat the first and last frames
+        window = q[idx]
+        aligned = torch.where((window * q[t]).sum(-1, keepdim=True) < 0, -window, window)
+        out_q[t] = (weights[:, None, None] * aligned).sum(0)
+        if smooth_root:
+            out_root[t] = (weights[:, None] * root_positions[idx]).sum(0)
+    smoothed = quaternion_to_matrix(out_q / out_q.norm(dim=-1, keepdim=True))
+    if joints is None:
+        return smoothed, out_root
+    result = local_rots.clone()
+    result[:, joints] = smoothed[:, joints]
+    return result, out_root
 
 
 def ground_lift(lowest: np.ndarray, start: int = 0, end: int | None = None, smooth_frames: int = 8) -> np.ndarray:

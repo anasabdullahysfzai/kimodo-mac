@@ -176,8 +176,18 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
 | `add_layer` | Adds curve-driven rotations to chosen joints of a finished take, with no model run. Works for any motion, and has `impact_front`, `impact_back`, `impact_left` and `impact_right` presets with a `strength` multiplier. |
 | `regenerate_range` | Redoes only a frame range with Kimodo, optionally with a new prompt. Every other frame stays exactly as it was. |
+| `view_motion` | Shows motion over time in images: speed, height and front-back curves, plus an onion skin with joint paths. |
+| `audit_motion` | Lists possible flaws with frames: floor sink, foot slide, jerk, whip, freeze, reversal, idle tail. |
+| `compare_takes` | Shows takes one above the other at the same frames, with a table of key numbers and flagged flaws. |
+| `score_takes` | Scores and ranks takes against criteria. `generate_motion` also takes `criteria` to rank new samples. |
+| `match_pose` | Finds a take's frames closest to a pose from another take, ignoring position and facing. |
+| `set_joint_target` | Moves or pins a hand or foot by bending its limb (two-bone IK). |
+| `get_recipe`, `replay_recipe` | Show the steps behind a take, or rerun them, optionally with a new seed. |
+| `smooth_motion` | Softens jerks in a frame range, on the whole body or chosen joints, with no model run. |
 | `fix_ground` | Raises the body smoothly wherever its mesh goes through the floor. |
 | `trim_take` | Cuts a take to a frame range, e.g. to remove an idle tail. |
+| `save_animation`, `list_saved_animations` | Save an approved take under a clear name, with a BVH and a video, and list what's saved. |
+| `open_in_demo` | Loads a saved animation or a take in your open demo tabs. |
 | `list_takes` | Lists saved takes with prompts, settings, what each was edited from, and a one-line summary. |
 
 Each take is saved to `~/kimodo-local/motions/<take id>/` as `motion.npz`, `meta.json` and (if used) `constraints.json`, the same layout as the demo's example folders.
@@ -235,7 +245,29 @@ Tested on t116 f58-80, where the soldier wrongly re-aimed after the hit, with "A
 
 **`fix_ground`** finds the lowest mesh point per frame and lifts the whole body with a smooth ease in and out. Set `start` to skip planted poses, because the lift also raises the feet. **`trim_take`** keeps a frame range and updates the prompt timings.
 
-Final kneeling deaths, using all of these on the takes above (shared t093 aim, 5 s each): front t151, back t152, headshot t153. Floor sink after the aim is 0 (was up to 15 cm), the back death no longer slams down or raises its hands, and the headshot snaps the head alone. Up to 3.5 cm of knee sink remains in the kneel, left alone to keep the planted foot down.
+Final kneeling deaths, using all of these on the takes above (shared t093 aim): front t171, back t183, headshot t196. Floor sink after the aim is 0 (was up to 15 cm), the back death no longer slams down or raises its hands, and the headshot snaps the head alone. Up to 3.5 cm of knee sink remains in the kneel, left alone to keep the planted foot down.
+
+**Avoiding a jerky hit.** Two things caused the jerk in t151 and t152, and smoothing fixed neither alone: a pose locked at two frames makes the body arrive, freeze and start again, and a large backward throw followed by a forward fall reads as "goes back, then comes back". Locking the arch at one frame with `regenerate_range` and its `keyframes_from` removed the freeze on the back death (hand acceleration 53 to 21 m/s^2, no dead stop, head reach unchanged). The front death instead uses a smaller recoil as a layer on a collapse that only moves forward: head 17 cm back instead of 41, hand peak 1.2 m/s instead of 6.1, then `smooth_motion` (sigma 1.5) to round the curve's corners.
+
+### Saving and reopening animations
+
+`save_animation` copies a take to `~/kimodo-local/approved-animations/<name>/` (`motion.npz`, `meta.json`, a BVH, a video, and the source take's name). It won't replace an existing name unless you pass `overwrite`. The copy doesn't change when you edit takes later; to rework an animation, edit its source take and save again.
+
+With `mcp/kimodo.patch` applied, the demo has a **Saved Animations** panel: pick a name and click **Open Animation**. New saves appear in the list by themselves. `open_in_demo` does the same from Claude. Set `KIMODO_SAVED` to use another folder, for both the demo and the MCP server.
+
+### Seeing and checking motion
+
+**`audit_motion`** reports things to look at, not verdicts: a freeze is a flaw in a hit but correct in a held pose, and a reversal is a flaw in a fall but normal in a dance. Foot slide is the noisiest check, since it also lists a foot being deliberately released. Tested on takes with known flaws: t151 was flagged for its freeze, whips and reversal ("head moves 43 cm back, then 112 cm forward again"), and its smoothed replacements t167 and t168 for none of those. It also found a planted foot sliding 12 cm that the renders hadn't shown.
+
+**`view_motion`** returns two images. In the curves, a spike is a jerk, a V between two peaks is a freeze, and a hump in front-back is a reversal. On the onion skin's joint paths, dots are 5 frames apart, so wide gaps mean fast.
+
+**`set_joint_target`** takes an `offset`, a fixed `position`, or `pin`, with a `curve` for how strongly it applies. The hand or foot keeps its world orientation, targets out of reach are reported, and only that limb changes, so keep a two-handed grip by moving both hands by the same amount. Tested: raising both hands 14 cm moved the aim from 0.67 m to 0.81 m with no change after the hit, and pinning a foot cut its drift over 58 frames from 10.6 cm to 0. A pin can pull the knee into the floor (6.4 cm in one take), so run `audit_motion` and `fix_ground` afterward.
+
+**`replay_recipe`** reproduced a seven-step take exactly (0.0 m difference) with its original seed. A new seed isn't guaranteed to be usable: seed 7 of the same kneeling prompt came out lying prone, so edits aimed at fixed frames landed on the wrong motion. Score new seeds with `audit_motion` or `score_takes`.
+
+**`match_pose`** only compares takes with each other. Matching a pose from an image or video would need a pose-estimation model, which isn't included.
+
+**Progress:** with `mcp/kimodo.patch` applied, a demo tab shows generation progress in a notification ("Generating 3 sample(s) (prompt 1 of 2): 30%").
 
 The demo's timeline shows prompts shorter than 2 s as 2 s, so its labels can run slightly long. The motion file isn't affected.
 

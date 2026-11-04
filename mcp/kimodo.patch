@@ -18,10 +18,24 @@ index a84fea1..6e8e976 100644
          self.grid_handles: dict[int, viser.GridHandle] = {}
  
 diff --git a/kimodo/demo/ui.py b/kimodo/demo/ui.py
-index 7d9f5e3..75248c4 100644
+index 7d9f5e3..137b37f 100644
 --- a/kimodo/demo/ui.py
 +++ b/kimodo/demo/ui.py
-@@ -2097,6 +2097,8 @@ def create_gui(
+@@ -280,6 +280,13 @@ def create_gui(
+ 
+             gui_model_selector = ModelSelectorHandle()
+ 
++        try:  # local: Saved Animations dropdown from the kimodo-mac MCP package
++            from kimodo_mcp.demo_live import add_saved_panel
++
++            add_saved_panel(demo, client)
++        except ImportError:
++            pass
++
+         with client.gui.add_folder("Examples", expand_by_default=True):
+             examples_base_dir = demo.get_examples_base_dir(model_name, absolute=True)
+             example_dict = viser_utils.load_example_cases(examples_base_dir)
+@@ -2097,6 +2104,8 @@ def create_gui(
              finally:
                  loading_notif.remove()
  
@@ -31,7 +45,7 @@ index 7d9f5e3..75248c4 100644
          def _(event: viser.GuiEvent) -> None:
              event_client = event.client
 diff --git a/kimodo/model/kimodo_model.py b/kimodo/model/kimodo_model.py
-index 7f4f2c3..d296733 100644
+index 7f4f2c3..e881834 100644
 --- a/kimodo/model/kimodo_model.py
 +++ b/kimodo/model/kimodo_model.py
 @@ -176,6 +176,8 @@ class Kimodo(nn.Module):
@@ -43,3 +57,11 @@ index 7f4f2c3..d296733 100644
  
              observed_motion, motion_mask = self.motion_rep.create_conditions_from_constraints_batched(
                  constraint_lst_base,
+@@ -277,6 +279,7 @@ class Kimodo(nn.Module):
+                 observed_motion=observed_motion,
+                 cfg_weight=cfg_weight,
+                 cfg_type=cfg_type,
++                progress_bar=progress_bar,  # local fix: multi-prompt ignored the caller's progress callback
+             )
+ 
+             motion = self.motion_rep.unnormalize(motion)

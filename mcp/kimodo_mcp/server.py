@@ -14,6 +14,7 @@ import functools
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from . import edit, metrics, render
+from .demo_live import SAVED, saved_names
 
 FPS = 30
 TAKES = Path(os.environ.get("KIMODO_MCP_TAKES", Path.home() / "kimodo-local" / "motions")).expanduser()
@@ -166,6 +168,12 @@ class Layer(BaseModel):
     decay_frames: int = Field(default=20, ge=0, description="Frames to settle (spring) or fade out before end (hold).")
 
 
+class Criterion(BaseModel):
+    metric: str = Field(description="Dotted path into analyze_motion or audit_motion results, e.g. end_pose.head_height_m, peaks.RightFoot.max_height_m, audit.counts.freeze.")
+    op: str = Field(description="One of <, <=, >, >=, ==.")
+    value: float
+
+
 class PathPoint(BaseModel):
     frame: int
     x: float = Field(description="World x in metres (character starts at the origin facing +z).")
@@ -204,10 +212,14 @@ def _load(take_id: str) -> dict:
 
 def _live(take_id: str, title: str, body: str = "", frames: list[int] | None = None, play: bool = False) -> None:
     """Tell a running Kimodo demo (patched with kimodo/demo/live.py) what is happening, so it can follow along."""
-    event = {"take_id": take_id, "path": str(TAKES / take_id), "title": title, "body": body,
-             "frames": frames, "play": play, "time": time.time()}
+    _event({"take_id": take_id, "path": str(TAKES / take_id), "title": title, "body": body,
+            "frames": frames, "play": play, "time": time.time()})
+
+
+def _event(event: dict) -> None:
+    TAKES.mkdir(parents=True, exist_ok=True)
     tmp = TAKES / "_live.json.tmp"
-    tmp.write_text(json.dumps(event))
+    tmp.write_text(json.dumps({"time": time.time(), **event}))
     tmp.replace(TAKES / "_live.json")  # atomic, so the demo never reads half a file
 
 
@@ -250,6 +262,27 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
     }
 
 
+def _status(text: str, done: bool = False) -> None:
+    """Show generation progress in a running demo, without loading anything."""
+    _event({"status": text, "done": done})
+
+
+def _progress(label: str, total_segments: int):
+    """A tqdm stand-in for Kimodo's denoising loop that reports each 10% to the demo."""
+    segment = [0]
+
+    def bar(steps):
+        steps = list(steps)
+        segment[0] += 1
+        for i, step in enumerate(steps):
+            if i % max(len(steps) // 10, 1) == 0:
+                part = f" (prompt {segment[0]} of {total_segments})" if total_segments > 1 else ""
+                _status(f"{label}{part}: {100 * i // len(steps)}%")
+            yield step
+
+    return bar
+
+
 def _run_model(texts, num_frames, dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples, transition_frames=5):
     """Run Kimodo; returns (output arrays with a batch dimension, seconds taken)."""
     from kimodo.constraints import load_constraints_lst
@@ -266,6 +299,7 @@ def _run_model(texts, num_frames, dicts, seed, diffusion_steps, text_weight, con
             num_samples=num_samples, num_transition_frames=transition_frames,
             post_processing=False,  # needs the x86-only motion_correction extension
             return_numpy=True,
+            progress_bar=_progress(f"Generating {num_samples} sample(s)", len(texts)),
         )
     seconds = round(time.time() - t0, 1)
     if out["posed_joints"].ndim == 3:  # unbatched single sample
@@ -299,6 +333,7 @@ def generate_motion(
     keyframes_from: Annotated[list[Keyframes] | None, Field(description="Poses to lock, copied from earlier takes; several sources can be combined.")] = None,
     root_path: Annotated[list[PathPoint] | None, Field(description="Root positions the character must pass through.")] = None,
     constraints: Annotated[list[dict] | None, Field(description="Raw Kimodo constraint dicts (constraints.json format).")] = None,
+    criteria: Annotated[list[Criterion] | None, Field(description="Rank the new takes against these, best first (see score_takes).")] = None,
 ) -> dict:
     """Generate motion takes with Kimodo and save each one. Returns take ids and key numbers.
 
@@ -329,6 +364,7 @@ def generate_motion(
             "cfg": {"enabled": True, "text_weight": text_weight, "constraint_weight": constraint_weight},
             "mcp": {"sample": i, "of": num_samples, "transition_frames": transition_frames,
                     "keyframes_from": [kf.model_dump() for kf in keyframes_from or []],
+                    "root_path": [p.model_dump() for p in root_path or []], "raw_constraints": constraints or [],
                     "generated_s": seconds, "summary": metrics.one_line(m)},
         }
         (d / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -337,7 +373,10 @@ def generate_motion(
         takes.append({"take_id": take_id, "summary": metrics.one_line(m), "path": str(d)})
     others = f" (+{len(takes) - 1} more: {', '.join(t['take_id'] for t in takes[1:])})" if len(takes) > 1 else ""
     _live(takes[0]["take_id"], f"New take {takes[0]['take_id']}", takes[0]["summary"] + others, play=True)
-    return {"generation_seconds": seconds, "takes": takes}
+    result = {"generation_seconds": seconds, "takes": takes}
+    if criteria:
+        result["ranking"] = sorted((_score(t["take_id"], criteria) for t in takes), key=lambda r: -r["passed"])
+    return result
 
 
 @tool
@@ -445,6 +484,7 @@ def regenerate_range(
     constraint_weight: Annotated[float, Field(ge=0, le=5)] = 2.0,
     num_samples: Annotated[int, Field(ge=1, le=10)] = 1,
     blend_frames: Annotated[int, Field(ge=1, le=30, description="Frames blended at each inner edge of the range.")] = 6,
+    keyframes_from: Annotated[list[Keyframes] | None, Field(description="Extra poses to lock inside the range.")] = None,
 ) -> dict:
     """Redo only frames start..end of a take with Kimodo; every other frame stays exactly as it was.
 
@@ -464,6 +504,7 @@ def regenerate_range(
         prompt = " ".join(t for i, t in enumerate(texts) if edges[i] <= end and edges[i + 1] > start) or " ".join(texts)
     outside = [f for f in range(T) if f < start or f > end]
     dicts = [_keyframe_constraint(Keyframes(take_id=take_id, frames=outside))] if outside else []
+    dicts += [_keyframe_constraint(kf) for kf in keyframes_from or []]
     out, seconds = _run_model([prompt], [T], dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples)
 
     skeleton, src_local, src_root = edit.motion_parts(motion)
@@ -473,9 +514,174 @@ def regenerate_range(
         local, root = edit.splice_range(src_local, src_root, new_local, new_root, start, end, blend_frames)
         takes.append(_save_edit(take_id, edit.rebuild_motion(local, root, skeleton), "redo of", {
             "edit": "regenerate_range", "range": [start, end], "prompt": prompt, "seed": seed, "diffusion_steps": diffusion_steps,
-            "text_weight": text_weight, "constraint_weight": constraint_weight, "blend_frames": blend_frames}))
+            "text_weight": text_weight, "constraint_weight": constraint_weight, "blend_frames": blend_frames,
+            "keyframes_from": [kf.model_dump() for kf in keyframes_from or []]}))
     _live(takes[0]["take_id"], f"Redid f{start}-{end}: {takes[0]['take_id']}", takes[0]["summary"], frames=[max(start - 5, 0), start, (start + end) // 2, end, min(end + 5, T - 1)])
     return {"generation_seconds": seconds, "takes": takes}
+
+
+@tool
+def smooth_motion(
+    take_id: str,
+    start: Annotated[int, Field(ge=0, description="First frame to smooth (30 fps).")],
+    end: Annotated[int, Field(description="Last frame to smooth.")],
+    sigma_frames: Annotated[float, Field(gt=0, le=15, description="Smoothing strength in frames: 2 is light, 4 is strong.")] = 3.0,
+    joints: Annotated[str | list[str] | None, Field(description="A group or joint names to smooth. Default: the whole body, including root movement.")] = None,
+    blend_frames: Annotated[int, Field(ge=1, le=30, description="Frames over which smoothing fades in and out at the range edges.")] = 6,
+) -> dict:
+    """Soften jerks in a frame range and save a new take; no model run. Frames outside the range are unchanged.
+
+    Also softens intended peaks: check the result with analyze_motion and render_motion.
+    """
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    if not 0 <= start <= end < T:
+        raise ValueError(f"Range {start}..{end} is outside the take's frames 0..{T - 1}")
+    if blend_frames * 2 > end - start + 1:
+        raise ValueError(f"Range is too short for blend_frames={blend_frames}")
+    skeleton, local, root = edit.motion_parts(motion)
+    idx = None if joints is None else edit.joint_indices(joints, list(skeleton.bone_index))
+    smoothed, smooth_root = edit.gaussian_smooth(local, root, sigma_frames, idx, smooth_root=joints is None)
+    new_local, new_root = edit.splice_range(local, root, smoothed, smooth_root, start, end, blend_frames)
+    new = edit.rebuild_motion(new_local, new_root, skeleton)
+    result = _save_edit(take_id, new, "smooth of", {"edit": "smooth_motion", "range": [start, end], "sigma_frames": sigma_frames, "joints": joints, "blend_frames": blend_frames})
+    result["max_foot_drift_m"] = round(edit.foot_drift(np.asarray(motion["posed_joints"]), new["posed_joints"], list(skeleton.bone_index)), 3)
+    _live(result["take_id"], f"Smoothed f{start}-{end}: {result['take_id']}", result["summary"], play=True)
+    return result
+
+
+def _audit(motion: dict) -> dict:
+    verts, _ = render.skin_vertices(motion["global_rot_mats"], motion["posed_joints"])
+    return metrics.audit(motion, verts[:, :, 1].min(1))
+
+
+@tool
+def audit_motion(take_id: str) -> dict:
+    """List possible flaws in a take with their frames: floor_sink, foot_slide, jerk, whip, freeze, reversal, idle_tail.
+
+    These are things to look at, not verdicts: a freeze is a flaw in a hit but correct in a held pose, and a reversal
+    is a flaw in a fall but normal in a dance. Floor sink is nearly always a real flaw.
+    """
+    return _audit(_load(take_id))
+
+
+@tool
+def view_motion(
+    take_id: str,
+    start: Annotated[int, Field(ge=0, description="First frame to show.")] = 0,
+    end: Annotated[int | None, Field(description="Last frame to show. Default: the end of the take.")] = None,
+    joints: Annotated[list[str] | None, Field(description="Joints to plot. Default: head, chest, hands and feet.")] = None,
+    view: Annotated[str, Field(description="Camera for the onion skin: side, front, three-quarter or top.")] = "side",
+    poses: Annotated[int, Field(ge=2, le=12, description="Poses overlaid in the onion skin.")] = 6,
+) -> list:
+    """Show how a take moves over time: curves of speed, height and front-back position, plus an onion skin with joint paths.
+
+    Reads motion from images: a spike is a jerk, a dip between peaks is a freeze, and a hump in front-back is a reversal.
+    Dashed lines mark prompt boundaries. On the paths, dots are 5 frames apart: wide gaps mean fast.
+    """
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    end = T - 1 if end is None else min(end, T - 1)
+    if start >= end:
+        raise ValueError(f"Need start < end within frames 0..{T - 1}")
+    marks = []
+    meta_path = _take_dir(take_id) / "meta.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        secs = meta.get("durations") or []
+        marks = [int(x) for x in np.cumsum([round(s * FPS) for s in secs])[:-1]] if len(secs) > 1 else []
+    use = joints or ["Head", "Chest", "LeftHand", "RightHand", "LeftFoot", "RightFoot"]
+    curves = render.motion_curves(motion, use, start, end, marks)
+    picked = [int(round(x)) for x in np.linspace(start, end, poses)]
+    onion = render.onion_skin(motion, picked, view, ["Head", "RightHand"] if joints is None else joints[:3])
+    _live(take_id, f"Claude is studying {take_id}", f"Frames {start}-{end}", frames=picked)
+    return [Image(data=render.png_bytes(curves), format="png"), Image(data=render.png_bytes(onion), format="png"), f"{take_id}: frames {start}-{end}, poses at {picked}"]
+
+
+@tool
+def compare_takes(
+    take_ids: Annotated[list[str], Field(min_length=2, max_length=6)],
+    frames: Annotated[int | list[int], Field(description="Evenly spaced frames per take, or exact frame numbers.")] = 6,
+    view: str = "side",
+) -> list:
+    """Show several takes one above the other at the same frames, with a table of their key numbers and flagged flaws."""
+    rows, table = [], []
+    for tid in take_ids:
+        motion = _load(tid)
+        picked = render.pick_frames(len(motion["posed_joints"]), frames)
+        sheet = render.contact_sheet(motion, picked, view=view, tile=220, cols=len(picked))
+        rows.append((tid, sheet))
+        m, a = metrics.analyze(motion), _audit(motion)
+        table.append({"take_id": tid, "seconds": m["duration_s"], "head_peak_m_per_s": m["head_peak_speed"]["m_per_s"], "jitter": m["jitter_m_per_s2"],
+                      "root_travel_m": m["root"]["net_travel_m"], "end_head_m": m["end_pose"]["head_height_m"],
+                      "fall_direction_deg": m["end_pose"].get("lean_direction_vs_start_facing_deg"), "still_end_m": m["end_pose"]["last_0_5s_net_movement_m"],
+                      "floor_sink_m": a["floor_sink_max_m"], "flagged": a["counts"], "body_accel_peak": a["body_accel_peak_m_per_s2"], "hand_accel_peak": a["hand_accel_peak_m_per_s2"]})
+    return [Image(data=render.png_bytes(render.stack_labelled(rows)), format="png"), json.dumps(table, indent=1)]
+
+
+def _score(take_id: str, criteria: list[Criterion]) -> dict:
+    motion = _load(take_id)
+    data = {**metrics.analyze(motion), "audit": _audit(motion)}
+    return {"take_id": take_id, **metrics.score(data, [c.model_dump() for c in criteria])}
+
+
+@tool
+def score_takes(take_ids: Annotated[list[str], Field(min_length=1)], criteria: list[Criterion]) -> list[dict]:
+    """Score takes against criteria and rank them, best first. A missing audit count means no findings of that type."""
+    return sorted((_score(t, criteria) for t in take_ids), key=lambda r: -r["passed"])
+
+
+@tool
+def match_pose(take_id: str, reference_take_id: str, reference_frame: int) -> dict:
+    """Find the frames of a take closest to a pose from another take, ignoring position and facing. Error in metres."""
+    return metrics.match_pose(_load(take_id), _load(reference_take_id), reference_frame)
+
+
+@tool
+def set_joint_target(
+    take_id: str,
+    joint: Annotated[str, Field(description="LeftHand, RightHand, LeftFoot or RightFoot.")],
+    start: int,
+    end: int,
+    offset: Annotated[tuple[float, float, float] | None, Field(description="Move by this many metres (x, y, z; y = up, the character starts facing +z), following the motion.")] = None,
+    position: Annotated[tuple[float, float, float] | None, Field(description="Move to this fixed world position in metres.")] = None,
+    pin: Annotated[bool, Field(description="Hold the joint where it is at pin_frame, e.g. to stop a planted foot sliding.")] = False,
+    pin_frame: Annotated[int | None, Field(description="Frame to hold the joint at. Default: start.")] = None,
+    curve: Annotated[str | list[list[float]], Field(description="How strongly the target applies over time: spring, ease, hold, or [[frame, weight], ...].")] = "hold",
+    attack_frames: Annotated[int, Field(ge=0, description="Frames to reach full strength.")] = 8,
+    decay_frames: Annotated[int, Field(ge=0, description="Frames to let go before end.")] = 8,
+) -> dict:
+    """Move or pin a hand or foot by bending its limb (two-bone IK) and save a new take; no model run.
+
+    Give one of offset, position or pin. The hand or foot keeps its world orientation. A target out of reach stops at
+    full stretch; those frames are reported. Only that limb changes, so a rifle grip between two hands needs both moved.
+    """
+    if sum([offset is not None, position is not None, bool(pin)]) != 1:
+        raise ValueError("Give exactly one of offset, position or pin")
+    motion = _load(take_id)
+    skeleton, local, root = edit.motion_parts(motion)
+    names = list(skeleton.bone_index)
+    T = len(local)
+    if not 0 <= start < end < T:
+        raise ValueError(f"Range {start}..{end} is outside the take's frames 0..{T - 1}")
+    if joint not in edit.IK_CHAINS:
+        raise ValueError(f"joint must be one of {', '.join(edit.IK_CHAINS)}")
+    current = torch.as_tensor(np.asarray(motion["posed_joints"])[:, names.index(joint)], dtype=root.dtype)
+    if offset is not None:
+        targets = current + torch.tensor(offset, dtype=root.dtype)
+    elif position is not None:
+        targets = torch.tensor(position, dtype=root.dtype).expand(T, 3)
+    else:
+        targets = current[start if pin_frame is None else pin_frame].expand(T, 3)
+    weights = edit.curve_weights(T, curve, start, end, attack_frames, decay_frames)
+    new_local, unreachable = edit.two_bone_ik(local, root, skeleton, joint, targets, weights)
+    new = edit.rebuild_motion(new_local, root, skeleton)
+    result = _save_edit(take_id, new, "ik on", {"edit": "set_joint_target", "joint": joint, "start": start, "end": end, "offset": offset, "position": position,
+                                                 "pin": pin, "pin_frame": pin_frame, "curve": curve, "attack_frames": attack_frames, "decay_frames": decay_frames})
+    result["unreachable_frames"] = unreachable[:20]
+    result["joint_moved_max_m"] = round(float(np.linalg.norm(new["posed_joints"][:, names.index(joint)] - np.asarray(motion["posed_joints"])[:, names.index(joint)], axis=1).max()), 3)
+    _live(result["take_id"], f"IK on {joint}: {result['take_id']}", result["summary"], play=True)
+    return result
 
 
 @tool
@@ -531,6 +737,149 @@ def trim_take(
     (d / "meta.json").write_text(json.dumps(meta, indent=2))
     _live(result["take_id"], f"Trimmed: {result['take_id']}", result["summary"], play=True)
     return result
+
+
+def _recipe_chain(take_id: str) -> list[tuple[str, dict]]:
+    """(take id, meta) from the original generation to this take."""
+    chain = []
+    current = take_id
+    while current:
+        meta = json.loads((_take_dir(current) / "meta.json").read_text())
+        chain.append((current, meta))
+        current = meta.get("mcp", {}).get("parent")
+    return chain[::-1]
+
+
+@tool
+def get_recipe(take_id: str) -> list[dict]:
+    """The steps that made a take, oldest first: its generation settings, then each edit."""
+    steps = []
+    for tid, meta in _recipe_chain(take_id):
+        info = dict(meta.get("mcp", {}))
+        info.pop("summary", None)
+        if not info.get("parent"):
+            info = {"edit": "generate_motion", "texts": meta.get("texts") or [meta.get("text")], "seconds": meta.get("durations") or [meta.get("duration")],
+                    "seed": meta.get("seed"), "diffusion_steps": meta.get("diffusion_steps"), "cfg": meta.get("cfg"), **info}
+        steps.append({"take_id": tid, **info})
+    return steps
+
+
+@tool
+def replay_recipe(
+    take_id: str,
+    seed: Annotated[int | None, Field(description="New seed for the first generation. Default: the original, which should reproduce the take.")] = None,
+    keep_edits: Annotated[bool, Field(description="Apply the take's later edits after generating.")] = True,
+) -> dict:
+    """Rerun a take's whole chain, e.g. with a new seed to make a variation, and return the final take.
+
+    Locked poses still come from the takes they were copied from. Edits are aimed at fixed frames, so on a very
+    different seed they may land at the wrong moment: check the result.
+    """
+    chain = _recipe_chain(take_id)
+    root_id, root = chain[0]
+    info = root.get("mcp", {})
+    texts, secs = root.get("texts") or [root.get("text")], root.get("durations") or [root.get("duration")]
+    cfg = root.get("cfg") or {}
+    kf = [Keyframes(**k) for k in (info.get("keyframes_from") or [])]
+    raw = info.get("raw_constraints")
+    if raw is None and not kf and (_take_dir(root_id) / "constraints.json").exists():
+        raw = json.loads((_take_dir(root_id) / "constraints.json").read_text())  # takes saved before root_path was recorded
+    samples = info.get("of") or 1
+    result = generate_motion(
+        segments=[Segment(prompt=t, seconds=x) for t, x in zip(texts, secs)], seed=root.get("seed", 42) if seed is None else seed,
+        diffusion_steps=root.get("diffusion_steps", 100), text_weight=cfg.get("text_weight", 2.0), constraint_weight=cfg.get("constraint_weight", 2.0),
+        num_samples=samples, transition_frames=info.get("transition_frames") or 5, keyframes_from=kf or None,
+        root_path=[PathPoint(**p) for p in info.get("root_path") or []] or None, constraints=raw or None,
+    )
+    current = result["takes"][info.get("sample") or 0]["take_id"]
+    steps = [current]
+    for _, meta in chain[1:] if keep_edits else []:
+        e = meta["mcp"]
+        kind = e.get("edit")
+        if kind == "add_layer":
+            r = add_layer(current, layers=[Layer(**lay) for lay in e["layers"]])
+        elif kind == "regenerate_range":
+            r = regenerate_range(current, e["range"][0], e["range"][1], prompt=e.get("prompt"), seed=e.get("seed", 42), diffusion_steps=e.get("diffusion_steps", 100),
+                                 text_weight=e.get("text_weight", 2.0), constraint_weight=e.get("constraint_weight", 2.0), blend_frames=e.get("blend_frames", 6),
+                                 keyframes_from=[Keyframes(**k) for k in e.get("keyframes_from") or []] or None)["takes"][0]
+        elif kind == "smooth_motion":
+            r = smooth_motion(current, e["range"][0], e["range"][1], e["sigma_frames"], e.get("joints"), e.get("blend_frames", 6))
+        elif kind == "fix_ground":
+            r = fix_ground(current, e["range"][0], e["range"][1], e.get("smooth_frames", 8))
+        elif kind == "trim_take":
+            r = trim_take(current, e["range"][1], e["range"][0])
+        elif kind == "set_joint_target":
+            r = set_joint_target(current, e["joint"], e["start"], e["end"], e.get("offset"), e.get("position"), e.get("pin", False), e.get("pin_frame"), e.get("curve", "hold"), e.get("attack_frames", 8), e.get("decay_frames", 8))
+        else:
+            raise ValueError(f"Unknown edit '{kind}' in the recipe")
+        current = r["take_id"]
+        steps.append(current)
+    return {"take_id": current, "steps": steps, "summary": metrics.one_line(metrics.analyze(_load(current)))}
+
+
+def safe_name(name: str) -> str:
+    """Validate a saved animation's folder name."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", name):
+        raise ValueError("Name must start with a letter or digit, and use only letters, digits, - and _")
+    return name
+
+
+@tool
+def save_animation(
+    take_id: str,
+    name: Annotated[str, Field(description="Folder name, e.g. kneel-death-back: letters, digits, - and _.")],
+    overwrite: Annotated[bool, Field(description="Replace an animation already saved under this name.")] = False,
+    video_view: Annotated[str, Field(description="Camera for the saved video.")] = "three-quarter",
+) -> dict:
+    """Save a take as an approved animation, with a BVH and a video, so it shows in the demo's Saved Animations dropdown.
+
+    The folder is a copy: later edits to takes don't change it. Edit with the take id in source-take.txt.
+    """
+    source = _take_dir(take_id)
+    target = SAVED / safe_name(name)
+    if target.exists() and not overwrite:
+        raise ValueError(f"'{name}' is already saved. Pass overwrite=true to replace it, or use another name.")
+    bvh = Path(export_motion(take_id, "bvh"))
+    mp4 = Path(export_motion(take_id, "mp4", video_view))
+    tmp = SAVED / f".{name}.tmp"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+    shutil.copy2(source / "motion.npz", tmp / "motion.npz")
+    shutil.copy2(source / "meta.json", tmp / "meta.json")
+    if (source / "constraints.json").exists():
+        shutil.copy2(source / "constraints.json", tmp / "constraints.json")
+    shutil.copy2(bvh, tmp / f"{name}.bvh")
+    shutil.copy2(mp4, tmp / f"{name}.mp4")
+    (tmp / "source-take.txt").write_text(take_id + "\n")
+    if target.exists():
+        shutil.rmtree(target)
+    tmp.replace(target)
+    _event({"refresh_saved": True})
+    return {"name": name, "path": str(target), "source_take": take_id, "files": sorted(f.name for f in target.iterdir())}
+
+
+@tool
+def list_saved_animations() -> list[dict]:
+    """List saved animations and the takes they came from."""
+    out = []
+    for name in saved_names():
+        src = SAVED / name / "source-take.txt"
+        out.append({"name": name, "source_take": src.read_text().strip() if src.exists() else None, "path": str(SAVED / name)})
+    return out
+
+
+@tool
+def open_in_demo(
+    name: Annotated[str, Field(description="A saved animation's name or a take id.")],
+    play: bool = True,
+) -> str:
+    """Load a saved animation or a take in every open demo tab. Needs the demo running with mcp/kimodo.patch applied."""
+    saved = SAVED / name
+    path = saved if name and "/" not in name and (saved / "motion.npz").exists() else _take_dir(name)
+    event = {"take_id": name, "path": str(path), "title": f"Opened {name}", "body": "", "frames": None, "play": play, "reload": True, "time": time.time()}
+    _event(event)
+    return f"Sent {name} to the demo ({path}). Tabs that are open load it within a second."
 
 
 @tool

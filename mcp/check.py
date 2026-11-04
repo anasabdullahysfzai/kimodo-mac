@@ -162,4 +162,87 @@ g = edit.ground_lift(low, smooth_frames=8)
 assert (g[40:50] >= 0.1 - 1e-9).all() and g[:20].max() == 0 and g[70:].max() == 0
 assert np.abs(np.diff(g)).max() < 0.1 / 8  # a gradual ease, not a jump
 assert edit.ground_lift(low, start=60).max() == 0  # nothing to fix after frame 60
+# edit.py: gaussian_smooth reduces jerk, leaves constant motion alone, and honours its joint list
+sm_l, sm_r = edit.gaussian_smooth(loc, rt, 3.0)
+_, sm_p, _ = sk.fk(sm_l, sm_r)
+jerk = lambda q: float((q[2:] - 2 * q[1:-1] + q[:-2]).norm(dim=-1).mean())
+assert jerk(sm_p) < 0.6 * jerk(base_pos)
+still_l = loc[:1].repeat(30, 1, 1, 1); still_r = rt[:1].repeat(30, 1)
+ss_l, ss_r = edit.gaussian_smooth(still_l, still_r, 3.0)
+assert float((ss_l - still_l).abs().max()) < 1e-4 and float((ss_r - still_r).abs().max()) < 1e-5
+arm = edit.joint_indices("right_arm", nm); others = [i for i in range(len(nm)) if i not in arm]
+sa_l, sa_r = edit.gaussian_smooth(loc, rt, 3.0, arm, smooth_root=False)
+assert torch.equal(sa_l[:, others], loc[:, others]) and torch.equal(sa_r, rt) and not torch.equal(sa_l[:, arm], loc[:, arm])
+# metrics.audit: each flaw is found on a constructed motion, and a clean one raises none of them
+def fake_motion(T=150):
+    q = np.zeros((T, 77, 3))
+    q[:, nm77.index("LeftLeg")], q[:, nm77.index("RightLeg")] = (0.1, 0.9, 0), (-0.1, 0.9, 0)
+    q[:, nm77.index("Head")] = (0, 1.5, 0)
+    q[:, nm77.index("LeftFoot")], q[:, nm77.index("RightFoot")] = (0.1, 0.5, 0), (-0.1, 0.5, 0)  # not planted
+    for i in range(T):  # slow steady hand drift
+        q[i, nm77.index("LeftHand")], q[i, nm77.index("RightHand")] = (0.3, 1.0, 0.3 + i * 0.001), (-0.3, 1.0, 0.3 + i * 0.001)
+        q[i, nm77.index("Hips")] = (0, 0.9, 0)
+    for i in range(T):  # every joint drifts just enough to not count as an idle tail
+        q[i] += (0, 0, i * 0.002)
+    return q
+
+
+nm77 = metrics._joint_names(77)
+clean = metrics.audit({"posed_joints": fake_motion()})
+assert clean["counts"] == {}, clean["findings"]
+q = fake_motion(); q[50:70, nm77.index("Head"), 2] -= np.linspace(0, 0.4, 20); q[70:90, nm77.index("Head"), 2] -= np.linspace(0.4, 0, 20)
+assert metrics.audit({"posed_joints": q})["counts"].get("reversal") == 1
+q = fake_motion()
+for h in ("LeftHand", "RightHand"):
+    q[40:46, nm77.index(h), 1] += np.linspace(0, 0.5, 6); q[46:60, nm77.index(h), 1] += 0.5; q[60:66, nm77.index(h), 1] += np.linspace(0.5, 1.0, 6); q[66:, nm77.index(h), 1] += 1.0
+assert metrics.audit({"posed_joints": q})["counts"].get("freeze") == 1
+assert metrics.audit({"posed_joints": fake_motion()}, np.full(150, -0.05))["counts"]["floor_sink"] == 1
+q = fake_motion()[:150]; q[100:] = q[100]
+assert metrics.audit({"posed_joints": q})["counts"].get("idle_tail") == 1
+
+# metrics.match_pose finds a frame again, whatever the facing and position; metrics.score reads nested values
+mp = metrics.match_pose(motion, motion, 76)
+assert mp["best_frame"] == 76 and mp["error_m"] < 1e-6
+turned = {"posed_joints": ph.numpy()}  # frames 30 and 76, re-faced earlier
+assert metrics.match_pose(motion, turned, 1)["best_frame"] == 76
+sc = metrics.score({"a": {"b": 1.0}, "audit": {"counts": {}}}, [{"metric": "a.b", "op": "<", "value": 2}, {"metric": "audit.counts.freeze", "op": "==", "value": 0}, {"metric": "a.c", "op": ">", "value": 0}])
+assert sc["passed"] == 2 and sc["total"] == 3
+
+# edit.py: two_bone_ik reaches the target, keeps limb lengths and hand orientation, and leaves the rest alone
+sk77 = build_skeleton(77); nm_77 = list(sk77.bone_index)
+loc77 = sk77.to_SOMASkeleton77(loc) if hasattr(sk77, "to_SOMASkeleton77") else None
+loc77 = sk.to_SOMASkeleton77(loc)
+g0, p0, _ = sk77.fk(loc77, rt)
+T = len(loc77)
+for joint in edit.IK_CHAINS:
+    h = nm_77.index(joint)
+    tgt = p0[:, h] + torch.tensor([0.05, 0.08, -0.06])
+    w = np.zeros(T); w[60:90] = 1.0
+    ik, missed = edit.two_bone_ik(loc77, rt, sk77, joint, tgt, w)
+    g1, p1, _ = sk77.fk(ik, rt)
+    reached = [f for f in range(60, 90) if f not in missed]
+    assert len(reached) > 20, (joint, len(missed))
+    assert float((p1[reached, h] - tgt[reached]).norm(dim=-1).max()) < 5e-3, joint  # at the target
+    assert float((g1[reached, h] - g0[reached, h]).abs().max()) < 1e-3, joint  # orientation kept
+    a_, b_, c_ = (nm_77.index(n) for n in edit.IK_CHAINS[joint])
+    assert abs(float((p1[70, b_] - p1[70, a_]).norm() - (p0[70, b_] - p0[70, a_]).norm())) < 1e-4  # bones keep length
+    assert float((p1[:60] - p0[:60]).abs().max()) < 1e-4 and float((p1[90:] - p0[90:]).abs().max()) < 1e-4  # outside unchanged
+    other = "RightFoot" if joint != "RightFoot" else "LeftFoot"
+    assert float((p1[:, nm_77.index(other)] - p0[:, nm_77.index(other)]).abs().max()) < 1e-4  # other limbs unchanged
+far = p0[:, nm_77.index("RightHand")] + torch.tensor([5.0, 0.0, 0.0])
+w = np.zeros(T); w[70] = 1.0
+_, missed = edit.two_bone_ik(loc77, rt, sk77, "RightHand", far, w)
+assert missed == [70]  # out of reach is reported
+
+# server.safe_name keeps saved animation names inside the saved folder
+from kimodo_mcp.server import safe_name  # noqa: E402
+
+assert safe_name("kneel-death_back2") == "kneel-death_back2"
+for bad in ("../evil", "a/b", "", ".hidden", "a b"):
+    try:
+        safe_name(bad)
+        raise AssertionError(bad)
+    except ValueError:
+        pass
+
 print("check passed")
