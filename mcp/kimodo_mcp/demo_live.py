@@ -22,6 +22,7 @@ SAVED = Path(os.environ.get("KIMODO_SAVED", Path.home() / "kimodo-local" / "appr
 TAKES = LIVE.parent
 _panels = {}  # client id -> function that refreshes the panels' dropdowns
 _current = {}  # client id -> folder of the motion last loaded in that tab
+CHARACTER_FILE = TAKES / "_character.txt"  # the last character exported to, so a reload keeps it
 _busy = set()  # client ids with an edit running
 _resets = {}  # client id -> function that sets the edit range to the whole motion
 
@@ -42,6 +43,20 @@ def saved_names() -> list[str]:
     if not SAVED.is_dir():
         return []
     return sorted(d.name for d in SAVED.iterdir() if (d / "motion.npz").exists())
+
+
+FLAW_ORDER = {"floor_sink": 0, "jerk": 1, "whip": 2, "freeze": 3, "reversal": 4, "foot_slide": 5, "idle_tail": 6}
+MAX_FLAWS = 12
+
+
+def flaw_rows(findings: list[dict]) -> list[tuple[str, dict]]:
+    """(button label, finding) for an audit's findings: worst kinds first, then in frame order."""
+    ordered = sorted(findings, key=lambda f: (FLAW_ORDER.get(f["type"], 9), f["frames"][0]))
+    rows = []
+    for f in ordered:
+        a, b = f["frames"]
+        rows.append((f"{f['type'].replace('_', ' ').capitalize()}, {f'f{a}' if a == b else f'f{a}-{b}'}", f))
+    return rows
 
 
 def take_names() -> list[str]:
@@ -102,6 +117,8 @@ def add_saved_panel(demo, client) -> None:
         takes = take_names()
         take_dropdown = client.gui.add_dropdown("Take", options=takes or [no_takes], initial_value=(takes or [no_takes])[0], hint="Every generation and edit, newest first. Open an earlier one to undo.")
         take_button = client.gui.add_button("Open Take", disabled=not takes)
+    with client.gui.add_folder("Check Motion", expand_by_default=True) as check_folder:
+        check = client.gui.add_button("Check Motion", hint="List possible flaws in the motion in the view. Click one to jump to it and set the edit frames.")
     with client.gui.add_folder("Edit Motion", expand_by_default=False):
         start = client.gui.add_number("Start Frame", initial_value=0, min=0, step=1)
         end = client.gui.add_number("End Frame", initial_value=0, min=0, step=1)
@@ -113,11 +130,14 @@ def add_saved_panel(demo, client) -> None:
         retime = client.gui.add_button("Retime Frames", hint="Play these frames at this speed. Poses don't change; the length does.")
         feet = client.gui.add_button("Plant Feet", hint="Stop planted feet sliding, across the whole motion.")
         ground = client.gui.add_button("Fix Ground", hint="Raise the body wherever it goes through the floor, across the whole motion.")
+        hit_side = client.gui.add_dropdown("Hit From", options=["Front", "Back", "Left", "Right"], initial_value="Front", hint="Front and Back: where the round came from. Left and Right: which shoulder is hit.")
+        hit_strength = client.gui.add_slider("Hit Strength", min=0.25, max=2.0, step=0.05, initial_value=1.0)
+        hit = client.gui.add_button("Add Hit At Playhead", hint="Add a quick recoil starting at the playhead, with no model run.")
         prompt = client.gui.add_text("Redo Prompt", initial_value="", hint="What should happen in these frames. Empty: the motion's own prompts.")
         upper = client.gui.add_checkbox("Upper Body Only", initial_value=False, hint="Keep the hips and legs exactly as they are.")
         seed = client.gui.add_number("Redo Seed", initial_value=42, step=1)
         redo = client.gui.add_button("Redo Frames", hint="Run the model on these frames only; every other frame stays exactly as it is.")
-        rig_path = client.gui.add_text("Character File", initial_value="", hint="Full path to your .fbx, .glb or .gltf character. Needs Blender. The file isn't changed.")
+        rig_path = client.gui.add_text("Character File", initial_value=CHARACTER_FILE.read_text().strip() if CHARACTER_FILE.exists() else "", hint="Full path to your .fbx, .glb or .gltf character. Needs Blender. The file isn't changed.")
         export_fbx = client.gui.add_button("Export FBX", hint="Put the motion in the view on your character, and download it as an animated FBX.")
 
     def last_frame(session) -> int:
@@ -128,8 +148,11 @@ def add_saved_panel(demo, client) -> None:
         last = last_frame(session)
         return min(max(int(start.value), 0), last), min(max(int(end.value), 0), last)
 
-    def action(control, label: str, run) -> None:
-        """Run an edit on the motion in the view, off the GUI thread. run(take id, session) does the work."""
+    def action(control, label: str, run, needs_take: bool = True) -> None:
+        """Run an edit on the motion in the view, off the GUI thread. run(take id, session) does the work.
+
+        needs_take=False is for what only reads the view: it saves no take, and run gets None.
+        """
 
         @control.on_click
         def _(event) -> None:
@@ -142,7 +165,7 @@ def add_saved_panel(demo, client) -> None:
                 note = client.add_notification(title=label, body="Working...", loading=True, with_close_button=False, auto_close_seconds=None)
                 try:
                     session = demo.client_sessions[cid]
-                    run(_view_take(session, cid), session)
+                    run(_view_take(session, cid) if needs_take else None, session)
                 except Exception as e:  # show the reason; never take the demo down
                     client.add_notification(title=f"{label} failed", body=str(e).removeprefix("ValueError: "), auto_close_seconds=12.0, color="red")
                     if cid in _status_handles:
@@ -208,11 +231,54 @@ def add_saved_panel(demo, client) -> None:
         if not rig:
             raise ValueError("Enter the path to your character file first.")
         report = json.loads(server.retarget_preview(take, rig, export_format="fbx")[-1])
+        CHARACTER_FILE.write_text(rig + "\n")
         exported = Path(report["exported"])
         client.send_file_download(f"{take}-{exported.name}", exported.read_bytes(), save_immediately=True)
         client.add_notification(title="FBX exported", body=f"Saved to {exported}", auto_close_seconds=15.0, color="green")
 
-    for control, label, run in ((export_fbx, "Export FBX", run_export), (trim, "Trim", run_trim), (smooth, "Smooth", run_smooth), (retime, "Retime", run_retime), (feet, "Plant Feet", run_feet),
+    def run_hit(take, session):
+        from . import server
+
+        server.add_layer(take, preset=f"impact_{hit_side.value.lower()}", start=min(int(session.frame_idx), last_frame(session)), strength=float(hit_strength.value))
+
+    flaw_handles = []
+
+    def clear_flaws() -> None:
+        for handle in flaw_handles:
+            handle.remove()
+        flaw_handles.clear()
+
+    def show_flaw(finding: dict) -> None:
+        a, b = finding["frames"]
+        session = demo.client_sessions[cid]
+        session.playing = False
+        demo.set_frame(cid, a)
+        start.value, end.value = a, b
+        client.add_notification(title=f"Frames {a}-{b}", body=finding["detail"], auto_close_seconds=8.0, color="blue")
+
+    def run_check(take, session):
+        from . import server
+
+        if not session.motions:
+            raise ValueError("There's no motion in the view. Generate one or open a take first.")
+        motion = list(session.motions.values())[0]
+        pos = motion.joints_pos.detach().cpu().numpy()
+        if pos.ndim != 3 or pos.shape[1] != 77:
+            raise ValueError("Checking only supports the SOMA skeleton.")
+        rows = flaw_rows(server._audit({"posed_joints": pos, "global_rot_mats": motion.joints_rot.detach().cpu().numpy()})["findings"])
+        clear_flaws()
+        summary = "Nothing flagged." if not rows else f"{len(rows)} to look at. Some may be intended, like a held pose."
+        if len(rows) > MAX_FLAWS:
+            summary += f" Showing the first {MAX_FLAWS}."
+        with check_folder:
+            flaw_handles.append(client.gui.add_markdown(summary))
+            for label_text, finding in rows[:MAX_FLAWS]:
+                button_handle = client.gui.add_button(label_text, hint=finding["detail"], color="gray")
+                button_handle.on_click(lambda _event, f=finding: show_flaw(f))
+                flaw_handles.append(button_handle)
+
+    action(check, "Check Motion", run_check, needs_take=False)
+    for control, label, run in ((hit, "Add Hit", run_hit), (export_fbx, "Export FBX", run_export), (trim, "Trim", run_trim), (smooth, "Smooth", run_smooth), (retime, "Retime", run_retime), (feet, "Plant Feet", run_feet),
                                 (ground, "Fix Ground", run_ground), (redo, "Redo Frames", run_redo), (save_button, "Save Animation", run_save)):
         action(control, label, run)
 
@@ -228,6 +294,7 @@ def add_saved_panel(demo, client) -> None:
 
     def reset_range() -> None:
         start.value, end.value = 0, last_frame(demo.client_sessions[cid])
+        clear_flaws()  # they described the motion that was in the view
 
     @button.on_click
     def _(event) -> None:

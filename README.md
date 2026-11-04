@@ -261,6 +261,8 @@ With `mcp/kimodo.patch` applied, the demo has two more panels. They call the sam
 
 **Takes** lists every generation and edit, newest first. Open an earlier one to undo an edit.
 
+**Check Motion** lists possible flaws in the motion in the view, worst kinds first. Clicking one jumps to its frame and sets the edit frames to it. These are things to look at, not verdicts, and the list clears when another motion loads. A check doesn't save a take.
+
 **Edit Motion** works on the motion in the view. A motion that isn't a take yet, such as one you just generated or an example, is saved as a new take first. If several samples are showing, it uses the first. Each edit saves a new take and loads it, and the source isn't changed. Set **Start Frame** and **End Frame**, by typing or from the playhead, then use:
 
 | Control | MCP tool | Uses the frame range |
@@ -271,9 +273,10 @@ With `mcp/kimodo.patch` applied, the demo has two more panels. They call the sam
 | **Redo Frames** (optional prompt, seed, **Upper Body Only**) | `regenerate_range` | Yes |
 | **Plant Feet** | `plant_feet` | No, the whole motion |
 | **Fix Ground** | `fix_ground` | No, the whole motion |
+| **Add Hit At Playhead** (**Hit From**, **Hit Strength**) | `add_layer` with an `impact_*` preset | No, it starts at the playhead |
 | **Export FBX** (with **Character File**) | `retarget_preview` | No, the whole motion |
 
-Export FBX needs Blender and the full path to your character. It downloads the animated FBX and keeps a copy in the take's `retarget` folder, with a preview sheet. Your character file isn't changed. The box empties when you reload the page.
+Export FBX needs Blender and the full path to your character. It downloads the animated FBX and keeps a copy in the take's `retarget` folder, with a preview sheet. Your character file isn't changed. The last path that exported is remembered for the next time the page loads.
 
 Redo Frames runs the model, so it takes about a minute on CPU and waits for any generation in progress. The rest finish in a second or two. Only the SOMA skeleton is supported. A take made from a demo motion can be edited, but `replay_recipe` refuses it, because the settings that generated it weren't recorded.
 
@@ -297,7 +300,7 @@ These all save a new take and leave the source alone. Only partial locks run the
 
 **`check_rifle`** and `render_motion`'s `rifle_frame` use a stand-in rifle fixed in the right hand, aimed through the left hand at a reference frame you choose. It's placed from wrist joints, so its place in the hands is approximate, and it isn't exported. It stays in the hand, so frames after the character would let go show it going through the floor; limit the check with `end`.
 
-**`retarget_preview`** needs Blender (set `KIMODO_BLENDER` if it isn't in `/Applications` or on your `PATH`). It matches common bone names (Mixamo, Unreal, Unity); pass `joint_map` for others. It corrects each bone's rest direction, so T-pose and A-pose rigs both work, and scales root motion by hip height. It doesn't change your rig file. Fingers stay in the rest pose, and nothing fixes contacts for different proportions, so look at the reported foot slide and floor numbers.
+**`retarget_preview`** needs Blender (set `KIMODO_BLENDER` if it isn't in `/Applications` or on your `PATH`). It matches common bone names (Mixamo, Unreal, Unity); pass `joint_map` for others. It corrects each bone's rest direction, so T-pose and A-pose rigs both work, and scales root motion by hip height. It doesn't change your rig file. With `lift_to_floor`, it raises the whole body frame by frame so the rig's mesh stays on or above the file's ground plane (z=0), and reports the lift and any gap left. Fingers stay in the rest pose, and nothing fixes contacts for different proportions, so look at the reported foot slide and floor numbers.
 
 Tested on a Mixamo character: the exported FBX reimported with bones exactly on the computed positions, and a copy with arms lowered 45 degrees, Unreal bone names and a 90 degree turn gave the same bone directions (0.0 degree difference). It hasn't been tested inside a game engine.
 

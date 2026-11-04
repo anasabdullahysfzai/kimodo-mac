@@ -1014,6 +1014,7 @@ def retarget_preview(
     view: Annotated[str, Field(description="side, front, three-quarter or top.")] = "three-quarter",
     export_format: Annotated[str, Field(description="File to write with the animation on your rig: fbx or glb.")] = "fbx",
     joint_map: Annotated[dict[str, str] | None, Field(description="SOMA joint -> your bone name, for bones the automatic match misses, e.g. {\"LeftShin\": \"calf_L\"}.")] = None,
+    lift_to_floor: Annotated[bool, Field(description="Raise the whole body, frame by frame with easing, so the rig's mesh stays on or above the floor. Reports the lift and any gap it leaves.")] = False,
 ) -> list:
     """Retarget a take onto your own character in headless Blender, render it, and write an animated file. The rig file isn't changed.
 
@@ -1040,7 +1041,7 @@ def retarget_preview(
     np.savez(source, global_rot_mats=np.asarray(motion["global_rot_mats"]), posed_joints=pj, rest_joints=skel.neutral_joints.cpu().numpy())
     picked = render.pick_frames(len(pj), frames)
     job = {"rig": str(rig), "motion": str(source), "names": names, "joint_map": joint_map, "frames": picked, "out_dir": str(out), "stem": stem,
-           "format": export_format, "fps": FPS, "camera_dir": list(render.VIEWS[view][0])}
+           "format": export_format, "fps": FPS, "camera_dir": list(render.VIEWS[view][0]), "lift_to_floor": lift_to_floor}
     job_path = out / f"{stem}-job.json"
     job_path.write_text(json.dumps(job))
     run = subprocess.run([_blender(), "-b", "--factory-startup", "--python-exit-code", "3", "--python", str(Path(__file__).with_name("blender_retarget.py")), "--", str(job_path)],

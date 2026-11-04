@@ -321,6 +321,14 @@ assert ue["Hips"] == "pelvis" and ue["LeftArm"] == "upperarm_l" and ue["LeftFore
 soma = ns["auto_map"](["Hips", "LeftLeg", "LeftShin", "RightLeg", "RightShin"])
 assert soma["LeftLeg"] == "LeftLeg" and soma["LeftShin"] == "LeftShin"
 
+# demo panel: flaws are listed worst kind first, then by frame, with readable labels
+from kimodo_mcp.demo_live import flaw_rows  # noqa: E402
+
+rows = flaw_rows([
+    {"type": "foot_slide", "frames": [5, 20], "detail": "a"}, {"type": "floor_sink", "frames": [40, 50], "detail": "b"},
+    {"type": "floor_sink", "frames": [3, 3], "detail": "c"}, {"type": "new_kind", "frames": [0, 1], "detail": "d"}])
+assert [r[0] for r in rows] == ["Floor sink, f3", "Floor sink, f40-50", "Foot slide, f5-20", "New kind, f0-1"] and rows[1][1]["detail"] == "b"
+
 # demo panel: a motion from the view becomes a take, and is then recognised instead of being saved again
 import tempfile  # noqa: E402
 

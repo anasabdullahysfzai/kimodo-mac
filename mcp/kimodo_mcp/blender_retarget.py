@@ -98,8 +98,7 @@ def main():
     toe = "LeftToeBase" if "LeftToeBase" in bone_of else "LeftFoot"
     rig_height = (world_head(bone_of["Hips"]) - world_head(bone_of[toe])).z
     scale = rig_height / float(rest[idx["Hips"], 1] - rest[idx[toe], 1])
-    # Where SOMA's floor falls on the rig: the same fraction of a leg below the toe joint.
-    floor = world_head(bone_of[toe]).z - scale * float(rest[idx[toe], 1] - rest[:, 1].min())
+    floor = 0.0  # the file's ground plane, which engines and other clips for the rig also use; a rig's rest mesh can sit off it
 
     # Per-bone correction: rig rest direction -> SOMA rest direction, both in world space.
     correction = {}
@@ -129,31 +128,67 @@ def main():
     scene.render.fps, scene.frame_start, scene.frame_end = job.get("fps", 30), 0, T - 1
     tracked = {j: np.zeros((T, 3)) for j in bone_of}
     hips_name = bone_of["Hips"].name
-    for f in range(T):
-        pose = {}
-        for b in order:
-            offset = b.parent.matrix_local.inverted() @ b.matrix_local if b.parent else b.matrix_local
-            chain = pose[b.parent.name] @ offset if b.parent else offset
-            j = joint_of.get(b.name)
-            if j is None:
-                pose[b.name] = chain
-                continue
-            S = W @ Matrix(gr[f, idx[j]].tolist()) @ W_inv
-            world_rot = S @ correction[j] @ a_rot3 @ b.matrix_local.to_3x3()
-            desired = (a_rot3.inverted() @ world_rot).to_4x4()
-            if b.name == hips_name:
-                p = Vector(pj[f, idx["Hips"]]) * scale
-                world = W @ p + Vector((world_head(b).x, world_head(b).y, floor))
-                desired.translation = a_inv @ world
-            else:
-                desired.translation = chain.translation
-            pb = arm.pose.bones[b.name]
-            pb.matrix_basis = chain.inverted() @ desired
-            pb.keyframe_insert("rotation_quaternion", frame=f)
-            if b.name == hips_name:
-                pb.keyframe_insert("location", frame=f)
-            pose[b.name] = desired
-            tracked[j][f] = arm.matrix_world @ desired.translation
+    def bake(lift) -> None:
+        """Key every frame, with the hips raised by lift[f]."""
+        for f in range(T):
+            pose = {}
+            for b in order:
+                offset = b.parent.matrix_local.inverted() @ b.matrix_local if b.parent else b.matrix_local
+                chain = pose[b.parent.name] @ offset if b.parent else offset
+                j = joint_of.get(b.name)
+                if j is None:
+                    pose[b.name] = chain
+                    continue
+                S = W @ Matrix(gr[f, idx[j]].tolist()) @ W_inv
+                world_rot = S @ correction[j] @ a_rot3 @ b.matrix_local.to_3x3()
+                desired = (a_rot3.inverted() @ world_rot).to_4x4()
+                if b.name == hips_name:
+                    p = Vector(pj[f, idx["Hips"]]) * scale
+                    world = W @ p + Vector((world_head(b).x, world_head(b).y, floor + lift[f]))
+                    desired.translation = a_inv @ world
+                else:
+                    desired.translation = chain.translation
+                pb = arm.pose.bones[b.name]
+                pb.matrix_basis = chain.inverted() @ desired
+                pb.keyframe_insert("rotation_quaternion", frame=f)
+                if b.name == hips_name:
+                    pb.keyframe_insert("location", frame=f)
+                pose[b.name] = desired
+                tracked[j][f] = arm.matrix_world @ desired.translation
+
+    def mesh_lowest() -> float:
+        """The lowest world height of any mesh at the current frame."""
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        low = np.inf
+        for o in (o for o in bpy.data.objects if o.type == "MESH"):
+            ev = o.evaluated_get(depsgraph)
+            m = ev.to_mesh()
+            co = np.empty(len(m.vertices) * 3)
+            m.vertices.foreach_get("co", co)
+            mw = np.array(o.matrix_world)
+            low = min(low, float((co.reshape(-1, 3) @ mw[2, :3] + mw[2, 3]).min()))
+            ev.to_mesh_clear()
+        return low
+
+    def every_frame_lowest() -> np.ndarray:
+        lows = []
+        for f in range(T):
+            scene.frame_set(f)
+            lows.append(mesh_lowest())
+        return np.array(lows)
+
+    bake(np.zeros(T))
+    lift_report = {}
+    if job.get("lift_to_floor") and any(o.type == "MESH" for o in bpy.data.objects):
+        before = every_frame_lowest()
+        need = np.clip(floor - before, 0.0, None)
+        w = 8  # frames either side: taking the widest need first means the eased lift still covers every frame
+        held = np.array([need[max(i - w, 0) : i + w + 1].max() for i in range(T)])
+        lift = np.array([held[max(i - w, 0) : i + w + 1].mean() for i in range(T)])
+        bake(lift)
+        after = every_frame_lowest()
+        lift_report = {"lift": {"max_m": round(float(lift.max()), 3), "first_frame_m": round(float(lift[0]), 3), "last_frame_m": round(float(lift[-1]), 3),
+                                "lowest_before_m": round(float(before.min()), 3), "lowest_after_m": round(float(after.min()), 3), "largest_gap_above_floor_m": round(float((after - floor).max()), 3)}}
     out = Path(job["out_dir"])
     out.mkdir(parents=True, exist_ok=True)
     stem = job["stem"]
@@ -166,7 +201,7 @@ def main():
 
     # Render on a floor, with the camera following the hips.
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
-    report = {"mapped": mapping, "unmapped_bones": [b.name for b in bones if b.name not in joint_of], "scale_vs_soma": round(scale, 3), "exported": str(exported), "has_mesh": bool(meshes), "floor_z": round(floor, 3)}
+    report = {"mapped": mapping, "unmapped_bones": [b.name for b in bones if b.name not in joint_of], "scale_vs_soma": round(scale, 3), "exported": str(exported), "has_mesh": bool(meshes), "floor_z": round(floor, 3), **lift_report}
     frames, images, sinks = job["frames"], [], {}
     if meshes:
         thickness = 0.01 * rig_height
@@ -201,17 +236,7 @@ def main():
             scene.render.filepath = str(path)
             bpy.ops.render.render(write_still=True)
             images.append(str(path))
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            low = np.inf
-            for o in meshes:
-                ev = o.evaluated_get(depsgraph)
-                m = ev.to_mesh()
-                co = np.empty(len(m.vertices) * 3)
-                m.vertices.foreach_get("co", co)
-                co = co.reshape(-1, 3)
-                mw = np.array(o.matrix_world)
-                low = min(low, float((co @ mw[2, :3] + mw[2, 3]).min()))
-                ev.to_mesh_clear()
+            low = mesh_lowest()
             sinks[f] = round(max(floor - low, 0.0), 3)
     report |= {"images": images, "frames": frames, "mesh_below_floor_m": sinks}
     np.savez(out / f"{stem}-joints.npz", **tracked)
