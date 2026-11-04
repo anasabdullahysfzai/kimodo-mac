@@ -25,7 +25,7 @@ from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
-from . import metrics, render
+from . import edit, metrics, render
 
 FPS = 30
 TAKES = Path(os.environ.get("KIMODO_MCP_TAKES", Path.home() / "kimodo-local" / "motions")).expanduser()
@@ -87,6 +87,11 @@ class Keyframes(BaseModel):
         "(positive = toward +x, the character's left at the start). Works for any pose, incl. lying down, "
         "e.g. turn a forward fall's lying pose 90 degrees to make a sideways fall. Applied after mirror.",
     )
+    upper_body_from: tuple[str, int] | None = Field(
+        default=None,
+        description="[take_id, frame]: use the spine, head and arms of that pose on top of these hips and legs, "
+        "e.g. a standing impact arch on a kneeling lower body.",
+    )
     hips_heading_deg: float | None = Field(
         default=None,
         description="Turn only the hips and legs (about the root) so the hips face this heading; the upper body keeps "
@@ -122,6 +127,15 @@ def face_heading(global_rot_mats, posed_joints, root_idx: int, heading_deg: floa
     return rots, pos
 
 
+def mix_upper_body(local_rots, upper_local_rots, names: list[str]):
+    """Local rotations [N,J,3,3] with everything above the hips replaced by upper_local_rots (leg joints kept)."""
+    keep = set(lower_body(names))
+    upper = [i for i in range(len(names)) if i not in keep]
+    mixed = local_rots.clone()
+    mixed[:, upper] = upper_local_rots[:, upper]
+    return mixed
+
+
 def lower_body(names: list[str]) -> list[int]:
     """Hips and leg joints (SOMA names): the part hips_heading_deg turns."""
     return [i for i, n in enumerate(names) if n == "Hips" or any(k in n for k in ("Leg", "Shin", "Foot", "Toe"))]
@@ -134,6 +148,21 @@ def mirror_pose(global_rot_mats, posed_joints, names: list[str]):
     perm = [names.index(n.replace("Left", "#").replace("Right", "Left").replace("#", "Right")) for n in names]
     m = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=global_rot_mats.dtype))
     return m @ global_rot_mats[:, perm] @ m, posed_joints[:, perm] * torch.tensor([-1.0, 1.0, 1.0], dtype=posed_joints.dtype)
+
+
+class Layer(BaseModel):
+    joints: str | list[str] = Field(description=f"A group ({', '.join(edit.GROUPS)}) or joint names.")
+    start: int = Field(description="First frame (30 fps).")
+    end: int | None = Field(default=None, description="Last frame. Default: start + attack_frames + decay_frames; for hold, the end of the clip.")
+    pitch_deg: float = Field(default=0.0, description="+ = back, - = forward. Split across the joints.")
+    twist_deg: float = Field(default=0.0, description="+ = right shoulder back (turns right), - = left shoulder back.")
+    side_deg: float = Field(default=0.0, description="+ = lean toward the right, - = toward the left.")
+    curve: str | list[list[float]] = Field(
+        default="spring",
+        description="spring (fast rise, damped settle), ease (smooth in and out), hold (ease in and stay), or [[frame, weight], ...].",
+    )
+    attack_frames: int = Field(default=3, ge=0, description="Frames to reach full strength.")
+    decay_frames: int = Field(default=20, ge=0, description="Frames to settle (spring) or fade out before end (hold).")
 
 
 class PathPoint(BaseModel):
@@ -209,12 +238,52 @@ def _keyframe_constraint(kf: Keyframes) -> dict:
         names = list(skel.bone_index)
         rots, pos = face_heading(rots, pos, skel.root_idx, kf.hips_heading_deg, lower_body(names), attach=names.index("Spine1"))
     local = skel.global_rots_to_local_rots(rots)
+    if kf.upper_body_from:
+        upper = _load(kf.upper_body_from[0])["global_rot_mats"][[kf.upper_body_from[1]]]
+        local = mix_upper_body(local, skel.global_rots_to_local_rots(torch.from_numpy(upper)), list(skel.bone_index))
     return {
         "type": "fullbody",
         "frame_indices": at,
         "local_joints_rot": matrix_to_axis_angle(local).tolist(),
         "root_positions": (pos[:, skel.root_idx].numpy() + [kf.offset_xz[0], 0.0, kf.offset_xz[1]]).tolist(),
     }
+
+
+def _run_model(texts, num_frames, dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples, transition_frames=5):
+    """Run Kimodo; returns (output arrays with a batch dimension, seconds taken)."""
+    from kimodo.constraints import load_constraints_lst
+    from kimodo.tools import seed_everything
+
+    model = _get_model()
+    t0 = time.time()
+    with contextlib.redirect_stdout(sys.stderr):
+        constraint_lst = load_constraints_lst(dicts, model.skeleton) if dicts else []
+        seed_everything(seed)
+        out = model(
+            texts, num_frames, num_denoising_steps=diffusion_steps, multi_prompt=True,
+            constraint_lst=constraint_lst, cfg_type="separated", cfg_weight=[text_weight, constraint_weight],
+            num_samples=num_samples, num_transition_frames=transition_frames,
+            post_processing=False,  # needs the x86-only motion_correction extension
+            return_numpy=True,
+        )
+    seconds = round(time.time() - t0, 1)
+    if out["posed_joints"].ndim == 3:  # unbatched single sample
+        out = {k: v[None] for k, v in out.items()}
+    return out, seconds
+
+
+def _save_edit(parent_id: str, motion: dict, label: str, edit: dict) -> dict:
+    """Save an edited motion as a new take, keeping the parent's prompts so the demo can load it."""
+    take_id = _new_id(f"{label} {parent_id[:4]}")
+    d = TAKES / take_id
+    d.mkdir()
+    np.savez(d / "motion.npz", **motion)
+    m = metrics.analyze(motion)
+    parent_meta = json.loads((_take_dir(parent_id) / "meta.json").read_text())
+    meta = {k: v for k, v in parent_meta.items() if k != "mcp"}
+    meta["mcp"] = {"parent": parent_id, **edit, "summary": metrics.one_line(m)}
+    (d / "meta.json").write_text(json.dumps(meta, indent=2))
+    return {"take_id": take_id, "parent": parent_id, "summary": metrics.one_line(m), "path": str(d)}
 
 
 @tool
@@ -235,10 +304,6 @@ def generate_motion(
     Each take is saved as a Kimodo demo example folder (motion.npz, meta.json, constraints.json),
     so it can also be opened in the web demo. Inspect results with render_motion and analyze_motion.
     """
-    from kimodo.constraints import load_constraints_lst
-    from kimodo.tools import seed_everything
-
-    model = _get_model()
     texts = [s.prompt for s in segments]
     num_frames = [round(s.seconds * FPS) for s in segments]
     dicts = list(constraints or [])
@@ -247,20 +312,7 @@ def generate_motion(
     if root_path:
         dicts.append({"type": "root2d", "frame_indices": [p.frame for p in root_path], "smooth_root_2d": [[p.x, p.z] for p in root_path]})
 
-    t0 = time.time()
-    with contextlib.redirect_stdout(sys.stderr):
-        constraint_lst = load_constraints_lst(dicts, model.skeleton) if dicts else []
-        seed_everything(seed)
-        out = model(
-            texts, num_frames, num_denoising_steps=diffusion_steps, multi_prompt=True,
-            constraint_lst=constraint_lst, cfg_type="separated", cfg_weight=[text_weight, constraint_weight],
-            num_samples=num_samples, num_transition_frames=transition_frames,
-            post_processing=False,  # needs the x86-only motion_correction extension
-            return_numpy=True,
-        )
-    seconds = round(time.time() - t0, 1)
-    if out["posed_joints"].ndim == 3:  # unbatched single sample
-        out = {k: v[None] for k, v in out.items()}
+    out, seconds = _run_model(texts, num_frames, dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples, transition_frames)
 
     takes = []
     for i in range(out["posed_joints"].shape[0]):
@@ -351,6 +403,81 @@ def export_motion(
 
 
 @tool
+def add_layer(
+    take_id: str,
+    layers: Annotated[list[Layer] | None, Field(description="Rotation layers, applied in order.")] = None,
+    preset: Annotated[str | None, Field(description="impact_front, impact_back, impact_left or impact_right; added after any layers.")] = None,
+    start: Annotated[int | None, Field(description="Frame where the preset begins (required with preset).")] = None,
+    strength: Annotated[float, Field(ge=0, le=3, description="Multiplier for the preset's angles.")] = 1.0,
+) -> dict:
+    """Add curve-driven rotations to chosen joints of a finished take and save a new take; no model run.
+
+    Works on any motion: impacts, recoil, a slumped posture, a head turn, exaggerating a swing. Frames outside each
+    layer are unchanged. Layers on hips or legs move the feet (there is no IK), so check max_foot_drift_m.
+    """
+    if preset and start is None:
+        raise ValueError("preset needs start")
+    motion = _load(take_id)
+    skeleton, local, root = edit.motion_parts(motion)
+    spec = [lay.model_dump() for lay in layers or []]
+    if preset:
+        spec += edit.preset_layers(preset, start, strength)
+    if not spec:
+        raise ValueError("Give layers or a preset")
+    new = edit.rebuild_motion(edit.apply_layers(local, root, skeleton, spec), root, skeleton)
+    drift = round(edit.foot_drift(np.asarray(motion["posed_joints"]), new["posed_joints"], list(skeleton.bone_index)), 3)
+    result = _save_edit(take_id, new, "layer on", {"edit": "add_layer", "layers": spec, "preset": preset, "strength": strength})
+    result["max_foot_drift_m"] = drift
+    _live(result["take_id"], f"New layer take {result['take_id']}", result["summary"], play=True)
+    return result
+
+
+@tool
+def regenerate_range(
+    take_id: str,
+    start: Annotated[int, Field(ge=0, description="First frame to redo (30 fps).")],
+    end: Annotated[int, Field(description="Last frame to redo.")],
+    prompt: Annotated[str | None, Field(description="What should happen in the range. Default: the source prompt(s) overlapping it.")] = None,
+    seed: int = 42,
+    diffusion_steps: Annotated[int, Field(ge=2, le=1000)] = 100,
+    text_weight: Annotated[float, Field(ge=0, le=5)] = 2.0,
+    constraint_weight: Annotated[float, Field(ge=0, le=5)] = 2.0,
+    num_samples: Annotated[int, Field(ge=1, le=10)] = 1,
+    blend_frames: Annotated[int, Field(ge=1, le=30, description="Frames blended at each inner edge of the range.")] = 6,
+) -> dict:
+    """Redo only frames start..end of a take with Kimodo; every other frame stays exactly as it was.
+
+    The surrounding frames are locked to guide the model, then the new section is spliced in and blended at its edges.
+    Each result is saved as a new take.
+    """
+    motion = _load(take_id)
+    T = len(motion["posed_joints"])
+    if not 0 <= start <= end < T:
+        raise ValueError(f"Range {start}..{end} is outside the take's frames 0..{T - 1}")
+    if blend_frames * 2 > end - start + 1:
+        raise ValueError(f"Range is too short for blend_frames={blend_frames}: use a range of at least {blend_frames * 2} frames or a smaller blend")
+    if prompt is None:
+        meta = json.loads((_take_dir(take_id) / "meta.json").read_text())
+        texts, secs = meta.get("texts") or [meta.get("text")], meta.get("durations") or [meta.get("duration")]
+        edges = np.cumsum([0] + [round(x * FPS) for x in secs])
+        prompt = " ".join(t for i, t in enumerate(texts) if edges[i] <= end and edges[i + 1] > start) or " ".join(texts)
+    outside = [f for f in range(T) if f < start or f > end]
+    dicts = [_keyframe_constraint(Keyframes(take_id=take_id, frames=outside))] if outside else []
+    out, seconds = _run_model([prompt], [T], dicts, seed, diffusion_steps, text_weight, constraint_weight, num_samples)
+
+    skeleton, src_local, src_root = edit.motion_parts(motion)
+    takes = []
+    for i in range(out["posed_joints"].shape[0]):
+        _, new_local, new_root = edit.motion_parts({k: np.asarray(v[i]) for k, v in out.items() if isinstance(v, np.ndarray)})
+        local, root = edit.splice_range(src_local, src_root, new_local, new_root, start, end, blend_frames)
+        takes.append(_save_edit(take_id, edit.rebuild_motion(local, root, skeleton), "redo of", {
+            "edit": "regenerate_range", "range": [start, end], "prompt": prompt, "seed": seed, "diffusion_steps": diffusion_steps,
+            "text_weight": text_weight, "constraint_weight": constraint_weight, "blend_frames": blend_frames}))
+    _live(takes[0]["take_id"], f"Redid f{start}-{end}: {takes[0]['take_id']}", takes[0]["summary"], frames=[max(start - 5, 0), start, (start + end) // 2, end, min(end + 5, T - 1)])
+    return {"generation_seconds": seconds, "takes": takes}
+
+
+@tool
 def list_takes() -> list[dict]:
     """List saved takes (newest last) with prompts, settings and a one-line summary."""
     out = []
@@ -362,7 +489,8 @@ def list_takes() -> list[dict]:
         out.append({
             "take_id": d.name, "prompts": meta.get("texts"), "seconds": meta.get("durations"),
             "seed": meta.get("seed"), "steps": meta.get("diffusion_steps"), "cfg": meta.get("cfg"),
-            "keyframes_from": meta.get("mcp", {}).get("keyframes_from"), "summary": meta.get("mcp", {}).get("summary"),
+            "keyframes_from": meta.get("mcp", {}).get("keyframes_from"),
+            "parent": meta.get("mcp", {}).get("parent"), "edit": meta.get("mcp", {}).get("edit"), "summary": meta.get("mcp", {}).get("summary"),
         })
     return out
 

@@ -94,4 +94,66 @@ d0, d1 = (pos - pos[:, :1])[0, 5, [0, 2]], (pt - pt[:, :1])[0, 5, [0, 2]]
 assert torch.allclose(torch.stack([d0[1], -d0[0]]), d1, atol=1e-5)  # (x, z) -> (z, -x) is +90 deg toward +x
 _, fk_pos, _ = skel30.fk(skel30.global_rots_to_local_rots(rt), pt[:, skel30.root_idx])
 assert float((fk_pos - pt).abs().max()) < 0.01, "turned pose drifts under FK"
+# mix_upper_body(): legs and hips from one pose, the rest from another; FK then keeps the legs where they were.
+from kimodo_mcp.server import mix_upper_body  # noqa: E402
+
+la, lb = skel30.global_rots_to_local_rots(rots[:1]), skel30.global_rots_to_local_rots(rots[1:])
+mixed = mix_upper_body(la, lb, names30)
+low, up = lower_body(names30), [i for i in range(len(names30)) if i not in lower_body(names30)]
+assert torch.equal(mixed[:, low], la[:, low]) and torch.equal(mixed[:, up], lb[:, up])
+_, fk_mix, _ = skel30.fk(mixed, pos[:1, skel30.root_idx])
+_, fk_a, _ = skel30.fk(la, pos[:1, skel30.root_idx])
+assert float((fk_mix[:, low] - fk_a[:, low]).abs().max()) < 1e-5
+# edit.py: curves
+from kimodo_mcp import edit  # noqa: E402
+
+w = edit.curve_weights(60, "spring", 10, attack_frames=3, decay_frames=20)
+assert w[9] == 0 and w[10] == 0 and abs(w[13] - 1) < 1e-9 and abs(w[33]) < 1e-9 and w[34] == 0 and w.min() < 0  # rises, overshoots, ends at 0
+w = edit.curve_weights(60, "ease", 10, 30)
+assert w[10] == 0 and abs(w[20] - 1) < 1e-9 and abs(w[30]) < 1e-9 and w[31] == 0
+w = edit.curve_weights(60, "hold", 10, attack_frames=5)
+assert w[10] == 0 and w[15] == 1 and w[59] == 1
+w = edit.curve_weights(60, "hold", 10, 50, attack_frames=5, decay_frames=5)
+assert w[20] == 1 and w[45] == 1 and abs(w[50]) < 1e-9 and w[51] == 0
+w = edit.curve_weights(60, [[10, 0], [20, 1], [30, 0]], 10)
+assert abs(w[15] - 0.5) < 1e-9 and w[5] == 0 and w[40] == 0
+
+# edit.py: layers
+sk, loc, rt = edit.motion_parts(motion)
+nm = list(sk.bone_index)
+_, base_pos, _ = sk.fk(loc, rt)
+_, zero_pos, _ = sk.fk(edit.apply_layers(loc, rt, sk, [{"joints": "spine", "start": 40}]), rt)
+assert float((zero_pos - base_pos).abs().max()) < 1e-3  # zero-strength layer is the identity
+L = {"joints": "neck_head", "pitch_deg": 40.0, "start": 40, "curve": "ease", "end": 70}
+_, lp, _ = sk.fk(edit.apply_layers(loc, rt, sk, [L]), rt)
+moved = (lp - base_pos).norm(dim=-1)
+for n in ("LeftFoot", "RightFoot", "LeftHand", "RightHand", "Chest"):
+    assert float(moved[:, nm.index(n)].max()) < 1e-4, n  # only the neck and head move
+assert float(moved[:40].max()) < 1e-4 and float(moved[71:].max()) < 1e-4  # nothing outside the layer
+assert float(moved[55, nm.index("Head")]) > 0.03
+# signs, facing +z while the example runs forward (frame 40): + pitch moves the head back
+assert float(lp[55, nm.index("Head"), 2] - base_pos[55, nm.index("Head"), 2]) < -0.02
+tw = {"joints": "spine", "twist_deg": 30.0, "start": 40, "curve": "ease", "end": 70}
+_, tp, _ = sk.fk(edit.apply_layers(loc, rt, sk, [tw]), rt)
+assert float(tp[55, nm.index("RightArm"), 2] - base_pos[55, nm.index("RightArm"), 2]) < -0.02  # + twist: right shoulder back
+assert float(tp[55, nm.index("LeftArm"), 2] - base_pos[55, nm.index("LeftArm"), 2]) > 0.02
+sd = {"joints": "spine", "side_deg": 30.0, "start": 40, "curve": "ease", "end": 70}
+_, sp, _ = sk.fk(edit.apply_layers(loc, rt, sk, [sd]), rt)
+assert float(sp[55, nm.index("Head"), 0] - base_pos[55, nm.index("Head"), 0]) < -0.02  # + side: toward the right (-x)
+assert edit.preset_layers("impact_front", 40, 2.0)[0]["pitch_deg"] == 76
+assert edit.foot_drift(base_pos.numpy(), base_pos.numpy(), nm) == 0
+
+# edit.py: splice keeps outside frames exactly and has no jump at the seams
+other = sk.global_rots_to_local_rots(torch.from_numpy(motion["global_rot_mats"][::-1].copy()))
+other_root = rt.flip(0) + torch.tensor([0.3, 0.0, 0.2])
+sl, sr = edit.splice_range(loc, rt, other, other_root, 60, 100, 6)
+assert torch.equal(sl[:60], loc[:60]) and torch.equal(sl[101:], loc[101:]) and torch.equal(sr[:60], rt[:60]) and torch.equal(sr[101:], rt[101:])
+assert torch.equal(sl[66:95], other[66:95]) and torch.equal(sr[66:95], other_root[66:95])
+_, sp, _ = sk.fk(sl, sr)
+full_jump = float((other_root[60] - rt[59]).norm())
+assert float((sr[60] - rt[59]).norm()) < 0.35 * full_jump  # first new frame is mostly source
+step = (sp[1:] - sp[:-1]).norm(dim=-1).amax(1)
+_, op, _ = sk.fk(other, other_root)
+_, sj, _ = sk.fk(edit.splice_range(loc, rt, other, other_root, 60, 100, 1)[0], edit.splice_range(loc, rt, other, other_root, 60, 100, 1)[1])
+assert float(step[58:68].max()) < float((sj[1:] - sj[:-1]).norm(dim=-1).amax(1)[58:68].max())  # blending beats a 1-frame cut
 print("check passed")

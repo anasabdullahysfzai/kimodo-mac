@@ -129,6 +129,8 @@ def analyze(motion: dict) -> dict:
     out["jitter_spikes"] = [{"frame": int(i) + 1, "m_per_s2": round(float(acc[i]), 1)} for i in np.argsort(-acc)[:3]]
 
     out["max_torso_lean_deg"] = round(float(lean.max()), 0)
+    head_speed = np.linalg.norm(np.diff(pj[:, idx["Head"]], axis=0), axis=1) * FPS
+    out["head_peak_speed"] = {"m_per_s": round(float(head_speed.max()), 2), "frame": int(head_speed.argmax())}
 
     # final pose (useful for falls/deaths): where the body ends up and whether it has come to rest
     start_facing = facing[0]

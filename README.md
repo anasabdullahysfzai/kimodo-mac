@@ -170,11 +170,13 @@ Settings in the demo's Model Parameters: Seed, Denoising Steps (default 100), Cl
 
 | Tool | What it does |
 |---|---|
-| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, `turn_deg` to rotate the pose by a fixed angle (works for lying poses too), `face_heading_deg` to turn the whole pose so the hips face a direction, and `hips_heading_deg` to turn only the hips and legs, which converts a whole-body swivel into torso twist), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
+| `generate_motion` | Generates takes from one or more prompt segments (seconds each), with seed, diffusion steps, text/constraint weights, number of samples. Optional `keyframes_from` (lock full-body poses copied from earlier takes, several sources allowed, each with `at_frames` to move them in time, `offset_xz` to move them in space, `mirror` to swap left and right, `turn_deg` to rotate the pose by a fixed angle (works for lying poses too), `upper_body_from` to put another pose's spine, head and arms on these hips and legs, `face_heading_deg` to turn the whole pose so the hips face a direction, and `hips_heading_deg` to turn only the hips and legs, which converts a whole-body swivel into torso twist), `root_path` (x/z waypoints) or raw Kimodo `constraints`. |
 | `render_motion` | Returns a contact-sheet image of chosen frames: side (faces right), front, three-quarter or top view. |
 | `analyze_motion` | Returns numbers: peak height and frame of head, hands, ankles and toes (relative to the head, with body heading, torso lean, knee angle and lean direction vs. the foot at that frame), root travel and walking speed in the first second, heading every 0.5 s (from the line across the hips, so it stays valid lying down) and the frames where turning happens, max torso lean, an end pose (head and hips height, torso lean and its direction vs. the starting facing, forward travel, fall time, net movement in the last 0.5 s), lowest point, foot contact, jitter and the frames where it spikes. Multi-prompt takes also get per segment: torso twist (shoulders vs. hips), how far each shoulder moved back, and posture (hips height, hand height, how far the hands are in front of the hips and apart, how much they wander, torso lean, knee bend, feet apart). |
 | `export_motion` | Writes BVH, Kimodo NPZ or an MP4 render. |
-| `list_takes` | Lists saved takes with prompts, settings and a one-line summary. |
+| `add_layer` | Adds curve-driven rotations to chosen joints of a finished take, with no model run. Works for any motion, and has `impact_front`, `impact_back`, `impact_left` and `impact_right` presets with a `strength` multiplier. |
+| `regenerate_range` | Redoes only a frame range with Kimodo, optionally with a new prompt. Every other frame stays exactly as it was. |
+| `list_takes` | Lists saved takes with prompts, settings, what each was edited from, and a one-line summary. |
 
 Each take is saved to `~/kimodo-local/motions/<take id>/` as `motion.npz`, `meta.json` and (if used) `constraints.json`, the same layout as the demo's example folders.
 
@@ -213,6 +215,23 @@ In a multi-prompt timeline Kimodo crops every constraint to each segment. If a s
 - Rendering 8 frames: about 3 s. MP4 of a 6 s take: about 29 s.
 - The kick prompt above reached head height at 6 s (right ankle 1.495 m, head 1.506 m, toes 0.14 m above head in a keyframed re-take). At 3 s with the same seed it peaked at 0.87 m.
 - `keyframes_from` with frame 51 and a new seed held that pose to within 0.07 m.
+
+### Editing a finished take
+
+Both tools write a new take and leave the source untouched.
+
+**`add_layer`** adds rotation on top of a motion. Each layer names `joints` (a group: `spine`, `neck_head`, `upper_body`, `left_arm`, `right_arm`, `hips`, `left_leg`, `right_leg`, or joint names), `pitch_deg` (+ = back), `twist_deg` (+ = right shoulder back), `side_deg` (+ = toward the right), `start` and `end`, and a `curve`: `spring` (fast rise, damped settle), `ease`, `hold`, or `[[frame, weight], ...]`. Frames outside a layer don't change. It's rotation only, so layers on hips or legs move the feet; the result reports `max_foot_drift_m`.
+
+Tested, each in under 2 seconds with zero foot drift:
+- Impact on t093 (`impact_front`, strength 1.5): head thrown 0.40 m back at 5.0 m/s, up from 0 m and 1.06 m/s. Only frames 47-79 changed. The hands still rise somewhat with the torso.
+- Tired slump on a walk (spine and neck, `hold`): same legs and stride, hunched torso.
+- Head turn on a standing take (`neck_head`, `ease`): the rest of the body doesn't move.
+
+**`regenerate_range`** locks all frames outside the range to guide the model, then splices the new frames in and blends `blend_frames` (default 6) at each inner edge. Outside frames are copied, so they match exactly. It generates the whole clip internally, so it takes as long as a full generation: 93 s for 3 samples of 5.5 s.
+
+Tested on t116 f58-80, where the soldier wrongly re-aimed after the hit, with "A kneeling person goes limp, arms dropping to the sides, and slumps forward toward the ground.": frames outside the range matched exactly in 3 of 3 takes, and in the best (t132) the hands fell to 0.25 m instead of rising to 0.65 m. Seam jolts were 17-31 m/s^2, against the take's existing 60. The new section has to meet the old motion at its edge, so if the hands drift back near the end of the range, widen the range.
+
+The demo's timeline shows prompts shorter than 2 s as 2 s, so its labels can run slightly long. The motion file isn't affected.
 
 ### Worked example: a spinning head-height kick
 
@@ -300,6 +319,12 @@ Each is two prompt segments: "A soldier kneels on one knee, aiming a rifle at ey
 ![Kneel death, headshot](assets/mcp-kneel-death-headshot.png)
 
 <sub>Takes t093 (side view), t098 (side view) and t110 (front view, the character's left is on the right of the image).</sub>
+
+**Making the bullet impact noticeable.** In those 2-prompt takes the hit barely showed: t093's head never moved back and peaked at 1.06 m/s. A third, middle prompt of 1 s for the hit alone moved the head back only 5-10 cm. What worked was the middle prompt plus locked poses: the aim at f15 and f40, then the arch from the walking death t030 (f50) on the take's own kneeling legs via `upper_body_from` at f50 and f55, then the original slump and landing poses right after, so the soldier doesn't recover and re-aim in between (which it did until the slump was locked). Results: front t118 (head 0.38 m back, 2.5 m/s), back t122 (0.63 m, 3.9 m/s), headshot t125 (0.37 m, 3.1 m/s), all landing as before. Peak jitter is high by design on the impact frames (up to about 60 m/s2).
+
+![Kneel death with impact, front](assets/mcp-kneel-impact-front.png)
+
+<sub>Take t118, side view: aim (f40), impact (f50-55), slump, face-down.</sub>
 
 ### Limits
 
